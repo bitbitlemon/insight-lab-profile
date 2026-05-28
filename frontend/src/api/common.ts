@@ -7,6 +7,7 @@ export interface PointsSummaryEntry {
   cap_adjustment_factor: number;
   final_points: number;
   reason?: string | null;
+  rule_basis?: string | null;
 }
 
 export interface PointsSummary {

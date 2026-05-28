@@ -61,7 +61,10 @@ const detailLine = (entry: PointsSummaryEntry) => (
       <span style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{entry.member_name || "未匹配成员"}</span>
       <span style={{ fontSize: 14, fontWeight: 800, color: "#c2410c" }}>{fmt(entry.final_points)} 分</span>
     </div>
-    <div style={{ marginTop: 6, fontSize: 12, color: "#4b5563", lineHeight: 1.5 }}>{pointsFormulaText(entry)}</div>
+    {entry.rule_basis ? (
+      <div style={{ marginTop: 6, fontSize: 12, color: "#374151", lineHeight: 1.6 }}>{entry.rule_basis}</div>
+    ) : null}
+    <div style={{ marginTop: 6, fontSize: 12, color: "#4b5563", lineHeight: 1.5 }}>成员最终分：{pointsFormulaText(entry)}</div>
     {entry.reason ? <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280", lineHeight: 1.5 }}>{entry.reason}</div> : null}
   </div>
 );

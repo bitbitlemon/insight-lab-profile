@@ -32,6 +32,7 @@ class PointsSummaryEntry(BaseModel):
     cap_adjustment_factor: float = 1.0
     final_points: float = 0.0
     reason: str | None = None
+    rule_basis: str | None = None
 
 
 class PointsSummary(BaseModel):
