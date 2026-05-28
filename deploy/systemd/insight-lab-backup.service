@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup Insight Lab SQLite database
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/insight-lab-profile
+ExecStart=/home/ubuntu/insight-lab-profile/scripts/backup_db.sh

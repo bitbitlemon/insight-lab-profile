@@ -1,0 +1,24 @@
+[Unit]
+Description=Insight Lab Profile FastAPI app
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/insight-lab-profile/backend
+EnvironmentFile=/home/ubuntu/insight-lab-profile/backend/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/insight-lab-profile/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/ubuntu/insight-lab-profile/backend/data /home/ubuntu/insight-lab-profile/backups /tmp
+
+[Install]
+WantedBy=multi-user.target

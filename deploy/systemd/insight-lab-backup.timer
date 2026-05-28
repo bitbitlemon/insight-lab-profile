@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Insight Lab database backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=insight-lab-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -28,6 +28,19 @@ insight-lab-profile/
 └── scripts/               跨端运维脚本
 ```
 
+## 生产部署
+
+生产环境建议只运行 FastAPI：后端监听 `127.0.0.1:8080`，并托管 `frontend/dist`。不要长期用 Vite dev server (`:5173`) 作为公网入口。
+
+常用命令：
+
+```bash
+./scripts/build_prod.sh      # 测试 + 前端生产构建
+./scripts/deploy_prod.sh     # 构建通过后重启 systemd 服务(如已安装)
+```
+
+详细流程见 `docs/deployment.md`。
+
 ## W1 起步
 
 ```bash
