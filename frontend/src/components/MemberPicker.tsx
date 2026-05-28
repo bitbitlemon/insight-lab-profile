@@ -136,8 +136,7 @@ const MemberPicker = ({
   }, [members]);
 
   const selectedMembers = useMemo(
-    () =>
-      selectedIds.map((openId) => memberMap[openId] ?? { open_id: openId, name: openId, role: "staff" } as Member),
+    () => selectedIds.map((openId) => memberMap[openId]).filter((member): member is Member => Boolean(member)),
     [memberMap, selectedIds],
   );
 

@@ -19,6 +19,7 @@ import PointsSummaryBadge from "../components/PointsSummaryBadge";
 import { TitleChip } from "../components/TitleChip";
 import { useAuth } from "../hooks/useAuth";
 import { PageShell, SectionError, SectionLoading, chipStyle, colors, sectionCardStyle } from "../components/ui";
+import { fileConfirmUrl } from "../utils/fileLinks";
 
 const LinkRow = ({ label, href }: { label: string; href: string }) => (
   <a
@@ -207,10 +208,7 @@ const AttachmentRow = ({
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {href ? (
             <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              download={file.name || undefined}
+              href={fileConfirmUrl(href, file.name)}
               style={{
                 padding: "6px 10px",
                 borderRadius: 999,
@@ -436,7 +434,7 @@ const CompetitionDetailPage = () => {
           <div style={{ color: colors.title, fontSize: 14, fontWeight: 700, marginBottom: 6 }}>详情</div>
           <Field label="开始日期" value={comp.start_date} />
           <Field label="结束日期" value={comp.end_date} />
-          <Field label="队长" value={comp.team_lead_open_id} />
+          <Field label="队长" value={comp.team_lead_open_id ? memberMap[comp.team_lead_open_id]?.name || null : null} />
           <Field label="得分" value={comp.score ?? null} />
           {comp.description ? (
             <div style={{ paddingTop: 10 }}>

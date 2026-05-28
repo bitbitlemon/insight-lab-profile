@@ -7,7 +7,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import PointsLedger
+from app.models import Member, PointsLedger
 
 
 def get_points_for_sources(
@@ -19,7 +19,7 @@ def get_points_for_sources(
     if not source_ids:
         return {}
     out: dict[int, dict] = {
-        sid: {"total_final_points": 0.0, "my_final_points": 0.0, "member_count": 0}
+        sid: {"total_final_points": 0.0, "my_final_points": 0.0, "member_count": 0, "entries": []}
         for sid in source_ids
     }
     q = (
@@ -38,6 +38,30 @@ def get_points_for_sources(
     for sid, total, member_count in db.execute(q).all():
         out[sid]["total_final_points"] = float(total or 0)
         out[sid]["member_count"] = int(member_count or 0)
+
+    detail_q = (
+        select(PointsLedger, Member.name)
+        .outerjoin(Member, Member.open_id == PointsLedger.member_open_id)
+        .where(
+            PointsLedger.source_type == source_type,
+            PointsLedger.source_id.in_(source_ids),
+            PointsLedger.status == "approved",
+        )
+        .order_by(PointsLedger.source_id.asc(), PointsLedger.final_points.desc(), PointsLedger.ledger_id.asc())
+    )
+    for ledger, member_name in db.execute(detail_q).all():
+        if ledger.source_id not in out:
+            continue
+        out[ledger.source_id]["entries"].append({
+            "member_open_id": ledger.member_open_id,
+            "member_name": member_name,
+            "base_points": float(ledger.base_points or 0),
+            "share_ratio": float(ledger.share_ratio or 0),
+            "decay_factor": float(ledger.decay_factor or 1),
+            "cap_adjustment_factor": float(ledger.cap_adjustment_factor or 1),
+            "final_points": float(ledger.final_points or 0),
+            "reason": ledger.reason,
+        })
     if current_open_id:
         q2 = (
             select(
@@ -67,4 +91,5 @@ def get_points_for_source(
         "total_final_points": 0.0,
         "my_final_points": 0.0,
         "member_count": 0,
+        "entries": [],
     }

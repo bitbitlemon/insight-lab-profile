@@ -9,7 +9,7 @@ import { listMeetingNotes } from "../api/meeting_notes";
 import { getMember } from "../api/members";
 import { listPapers } from "../api/papers";
 import { getMemberPoints, getMemberPointsLedger, type LedgerEntry, type MemberPoints } from "../api/points";
-import PointsSummaryBadge from "../components/PointsSummaryBadge";
+import PointsSummaryBadge, { pointsFormulaText } from "../components/PointsSummaryBadge";
 import PositionChip from "../components/PositionChip";
 import { TitleChip } from "../components/TitleChip";
 import VenueBadge from "../components/VenueBadge";
@@ -561,6 +561,9 @@ const MemberDetailPage = () => {
                             </div>
                             <div style={{ marginTop: 10, color: colors.body, fontSize: 13, lineHeight: 1.6 }}>
                               {entry.reason || "--"}
+                            </div>
+                            <div style={{ marginTop: 6, color: colors.muted, fontSize: 12, lineHeight: 1.5 }}>
+                              {pointsFormulaText(entry)}
                             </div>
                           </div>
                           <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em", color: colors.title }}>

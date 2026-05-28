@@ -4,7 +4,7 @@ import LoginPage from "./pages/LoginPage";
 
 const ProfilePage = lazy(() => import("./pages/ProfilePage"));
 const PaperFormPage = lazy(() => import("./pages/PaperFormPage"));
-const PaperPipelinePage = lazy(() => import("./pages/PaperPipelinePage"));
+const PaperCyclePage = lazy(() => import("./pages/PaperPipelinePage"));
 const PaperDetailPage = lazy(() => import("./pages/PaperDetailPage"));
 const CompetitionFormPage = lazy(() => import("./pages/CompetitionFormPage"));
 const CompetitionDetailPage = lazy(() => import("./pages/CompetitionDetailPage"));
@@ -27,6 +27,7 @@ const MeetingFormPage = lazy(() => import("./pages/MeetingFormPage"));
 const MeetingNotesPage = lazy(() => import("./pages/MeetingNotesPage"));
 const AdminConsolePage = lazy(() => import("./pages/AdminConsolePage"));
 const MomentsPage = lazy(() => import("./pages/MomentsPage"));
+const FileConfirmPage = lazy(() => import("./pages/FileConfirmPage"));
 
 export const routes: RouteObject[] = [
   { path: "/", element: <ProfilePage /> },
@@ -36,7 +37,7 @@ export const routes: RouteObject[] = [
   { path: "/meeting-notes", element: <MeetingNotesPage /> },
   { path: "/papers/new", element: <PaperFormPage /> },
   { path: "/papers/:paper_id/edit", element: <PaperFormPage /> },
-  { path: "/papers/:paper_id/pipeline", element: <PaperPipelinePage /> },
+  { path: "/papers/:paper_id/pipeline", element: <PaperCyclePage /> },
   { path: "/papers/:paper_id", element: <PaperDetailPage /> },
   { path: "/competitions/new", element: <CompetitionFormPage /> },
   { path: "/competitions/:comp_id/edit", element: <CompetitionFormPage /> },
@@ -59,5 +60,6 @@ export const routes: RouteObject[] = [
   { path: "/board/leaderboard", element: <LeaderboardPage /> },
   { path: "/admin", element: <AdminConsolePage /> },
   { path: "/members/:open_id", element: <MemberDetailPage /> },
+  { path: "/files/confirm", element: <FileConfirmPage /> },
   { path: "/login", element: <LoginPage /> },
 ];

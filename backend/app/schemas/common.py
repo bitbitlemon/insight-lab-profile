@@ -1,6 +1,6 @@
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 T = TypeVar("T")
 
@@ -23,8 +23,20 @@ class ErrorResponse(BaseModel):
     detail: dict | None = None
 
 
+class PointsSummaryEntry(BaseModel):
+    member_open_id: str
+    member_name: str | None = None
+    base_points: float = 0.0
+    share_ratio: float = 0.0
+    decay_factor: float = 1.0
+    cap_adjustment_factor: float = 1.0
+    final_points: float = 0.0
+    reason: str | None = None
+
+
 class PointsSummary(BaseModel):
     """成果(论文/比赛/贡献)关联积分汇总,用于把'积分价值'嵌到成果卡片。"""
     total_final_points: float = 0.0
     my_final_points: float = 0.0
     member_count: int = 0
+    entries: list[PointsSummaryEntry] = Field(default_factory=list)

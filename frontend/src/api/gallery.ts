@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { appendAuthToken } from "../utils/fileLinks";
 
 export type GallerySourceType = "all" | "competition" | "paper";
 
@@ -22,11 +23,7 @@ export interface GalleryListResponse {
   total: number;
 }
 
-export const galleryPhotoUrl = (photo: GalleryPhoto): string => {
-  const token = localStorage.getItem("jwt") || "";
-  const separator = photo.proxy_path.includes("?") ? "&" : "?";
-  return `${photo.proxy_path}${separator}token=${encodeURIComponent(token)}`;
-};
+export const galleryPhotoUrl = (photo: GalleryPhoto): string => appendAuthToken(photo.proxy_path);
 
 export const galleryPhotoProxyUrl = (photo: GalleryPhoto): string => {
   return galleryPhotoUrl(photo);

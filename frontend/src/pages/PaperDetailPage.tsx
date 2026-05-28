@@ -355,7 +355,7 @@ const PaperDetailPage = () => {
 
         <Card style={sectionCardStyle}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <Button size="small" onClick={() => navigate(`/papers/${paper.paper_id}/pipeline`)}>查看流水线</Button>
+            <Button size="small" onClick={() => navigate(`/papers/${paper.paper_id}/pipeline`)}>查看周期</Button>
             <Button size="small" color="primary" onClick={() => navigate(`/papers/${paper.paper_id}/edit`)}>编辑</Button>
           </div>
         </Card>

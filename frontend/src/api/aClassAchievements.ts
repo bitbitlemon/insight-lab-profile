@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { appendAuthToken } from "../utils/fileLinks";
 
 const A_CLASS_TABLE_ID = "tbl5hk9UpmisKOxC";
 
@@ -84,5 +85,5 @@ export const patchAClassAttachments = async (
 };
 
 export const aClassFileUrl = (fileToken: string, token?: string): string => {
-  return `/api/files/${encodeURIComponent(fileToken)}/proxy?table_id=${encodeURIComponent(A_CLASS_TABLE_ID)}&t=${encodeURIComponent(token || "")}`;
+  return appendAuthToken(`/api/files/${encodeURIComponent(fileToken)}/proxy?table_id=${encodeURIComponent(A_CLASS_TABLE_ID)}`, token);
 };

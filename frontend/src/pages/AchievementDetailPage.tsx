@@ -14,6 +14,7 @@ import {
 } from "../api/aClassAchievements";
 import { useAuth } from "../hooks/useAuth";
 import { PageShell, SectionError, SectionLoading, chipStyle, colors, sectionCardStyle } from "../components/ui";
+import { fileConfirmUrl } from "../utils/fileLinks";
 
 const gridStyle: CSSProperties = {
   display: "grid",
@@ -131,10 +132,7 @@ const AttachmentRow = ({
     </div>
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
       <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        download={file.name || undefined}
+        href={fileConfirmUrl(href, file.name)}
         style={{
           padding: "6px 10px",
           borderRadius: 999,

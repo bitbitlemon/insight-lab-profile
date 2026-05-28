@@ -1,6 +1,7 @@
 import { api } from "./client";
 import type { PointsSummary } from "./common";
 import type { Page } from "../types/api";
+import { appendAuthToken } from "../utils/fileLinks";
 
 const COMPETITIONS_TABLE_ID = import.meta.env.VITE_LARK_TABLE_COMPETITIONS || "tbliDgFfcNAv0cIF";
 
@@ -84,9 +85,8 @@ export const competitionFileProxyUrl = (attachment: {
   file_token: string;
   source_table_id?: string | null;
 }): string => {
-  const jwt = localStorage.getItem("jwt") || "";
   const tableId = attachment.source_table_id || COMPETITIONS_TABLE_ID;
-  return `/api/files/${encodeURIComponent(attachment.file_token)}/proxy?t=${encodeURIComponent(jwt)}&table_id=${encodeURIComponent(tableId)}`;
+  return appendAuthToken(`/api/files/${encodeURIComponent(attachment.file_token)}/proxy?table_id=${encodeURIComponent(tableId)}`);
 };
 
 export const listCompetitions = async (params?: {

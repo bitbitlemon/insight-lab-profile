@@ -11,7 +11,7 @@ import { listPapers } from "../api/papers";
 import { getMemberPoints, getMemberPointsLedger, type LedgerEntry, type MemberPoints } from "../api/points";
 import Loading from "../components/Loading";
 import { MemberAvatarLink, MemberNameLink } from "../components/MemberProfileLink";
-import PointsSummaryBadge from "../components/PointsSummaryBadge";
+import PointsSummaryBadge, { pointsFormulaText } from "../components/PointsSummaryBadge";
 import PositionChip from "../components/PositionChip";
 import SignatureInlineEditor from "../components/SignatureInlineEditor";
 import TodaySummary from "../components/TodaySummary";
@@ -516,6 +516,9 @@ const ProfilePage = () => {
                             </div>
                             <div style={{ marginTop: 10, color: colors.body, fontSize: 13, lineHeight: 1.6 }}>
                               {entry.reason || "--"}
+                            </div>
+                            <div style={{ marginTop: 6, color: colors.muted, fontSize: 12, lineHeight: 1.5 }}>
+                              {pointsFormulaText(entry)}
                             </div>
                           </div>
                           <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em", color: colors.title }}>

@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { appendAuthToken } from "../utils/fileLinks";
 
 export type MomentAuthor = {
   open_id: string;
@@ -102,6 +103,5 @@ export const uploadMomentImage = async (file: File): Promise<UploadMomentImageRe
 };
 
 export const momentImageUrl = (fileToken: string): string => {
-  const token = localStorage.getItem("jwt") || "";
-  return `/api/files/${encodeURIComponent(fileToken)}/proxy?t=${encodeURIComponent(token)}`;
+  return appendAuthToken(`/api/files/${encodeURIComponent(fileToken)}/proxy`);
 };

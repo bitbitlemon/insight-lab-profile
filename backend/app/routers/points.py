@@ -43,6 +43,8 @@ class LedgerEntry(BaseModel):
     occurred_at: date
     base_points: float
     share_ratio: float
+    decay_factor: float
+    cap_adjustment_factor: float
     final_points: float
     reason: str | None
     created_at: datetime

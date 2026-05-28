@@ -11,6 +11,7 @@ import {
   type ZhangqianStageGroup,
 } from "../api/papers";
 import { PageShell, chipStyle, colors, sectionCardStyle } from "../components/ui";
+import { fileConfirmUrl } from "../utils/fileLinks";
 import type { Paper } from "../types/api";
 
 const formatBytes = (n?: number): string => {
@@ -260,10 +261,7 @@ const StageCard = ({ stage }: { stage: ZhangqianLogStage }) => {
                   </div>
                   {href ? (
                     <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      download={file.name}
+                      href={fileConfirmUrl(href, file.name, kind === "image" ? "open" : "download")}
                       style={{
                         padding: "6px 10px",
                         borderRadius: 999,

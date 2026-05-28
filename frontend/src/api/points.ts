@@ -35,6 +35,8 @@ export interface LedgerEntry {
   occurred_at: string;
   base_points: number;
   share_ratio: number;
+  decay_factor: number;
+  cap_adjustment_factor: number;
   final_points: number;
   reason: string | null;
   created_at: string;

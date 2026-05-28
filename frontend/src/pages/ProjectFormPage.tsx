@@ -518,7 +518,7 @@ const ProjectFormPage = () => {
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                         <div>
                           <div style={{ fontSize: 13, fontWeight: 700, color: colors.title }}>
-                            {index + 1}. {memberDirectory[member.member_open_id] || member.member_open_id}
+                            {index + 1}. {memberDirectory[member.member_open_id] || ""}
                           </div>
                           <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 6 }}>
                             <span style={chipStyle("#eef2ff", "#4338ca")}>{memberUiRoleLabel[member.ui_role]}</span>
