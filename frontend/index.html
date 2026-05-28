@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <title>Insight Lab Profile</title>
+    <script type="text/javascript" src="https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.44.js"></script>
+    <style>
+      #app-boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #f5f7fa;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+        color: #8a8f99;
+      }
+      #app-boot .spin {
+        width: 28px;
+        height: 28px;
+        border: 3px solid #d6dae0;
+        border-top-color: #1677ff;
+        border-radius: 50%;
+        animation: app-boot-spin 0.8s linear infinite;
+      }
+      @keyframes app-boot-spin {
+        to { transform: rotate(360deg); }
+      }
+      #app-boot .tip { margin-top: 14px; font-size: 14px; }
+      #app-boot .fail-only { display: none; }
+      #app-boot.failed .spin { display: none; }
+      #app-boot.failed .fail-only { display: block; text-align: center; }
+      #app-boot .btn {
+        margin-top: 16px;
+        padding: 8px 22px;
+        font-size: 14px;
+        color: #1677ff;
+        border: 1px solid #1677ff;
+        border-radius: 18px;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <!-- 启动占位: JS 成功执行后会被 React 整体替换; 若加载失败则停留并在 8s 后转为错误提示 -->
+      <div id="app-boot">
+        <div class="spin"></div>
+        <div class="tip">正在加载…</div>
+        <div class="fail-only">
+          <div class="tip" style="color:#5a5f68">页面加载失败</div>
+          <div class="tip" style="font-size:13px">请更新到最新版飞书后重试,或下拉刷新页面</div>
+          <button class="btn" type="button" onclick="location.reload()">重新加载</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      // 兜底: 8 秒内 React 未挂载(脚本加载失败 / 旧浏览器执行不了)则显示错误提示,
+      // 用 ES5 语法书写, 确保在任何浏览器都能运行。
+      (function () {
+        var FAIL_MS = 8000;
+        var timer = setTimeout(function () {
+          var boot = document.getElementById("app-boot");
+          if (boot) {
+            boot.className = "failed";
+            boot.querySelector(".tip").style.display = "none";
+          }
+        }, FAIL_MS);
+        window.addEventListener("error", function (e) {
+          // 资源(script/css)加载失败立即提示, 不必等满 8 秒
+          if (e && e.target && (e.target.tagName === "SCRIPT" || e.target.tagName === "LINK")) {
+            clearTimeout(timer);
+            var boot = document.getElementById("app-boot");
+            if (boot) {
+              boot.className = "failed";
+              boot.querySelector(".tip").style.display = "none";
+            }
+          }
+        }, true);
+        // React 挂载后 #app-boot 被移除, 取消兜底计时
+        window.__cancelBootFallback = function () { clearTimeout(timer); };
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

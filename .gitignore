@@ -1,0 +1,46 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Local databases and runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+backend/data/
+
+# Logs and temp files
+*.log
+.tmp/
+tmp/
+.DS_Store
+
+# Local editor state
+.vscode/
+.idea/
+
+# Certificates and backups
+*.crt
+*.bak
+*.db.gz
+backups/
