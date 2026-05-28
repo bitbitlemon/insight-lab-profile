@@ -25,7 +25,7 @@ export interface GalleryListResponse {
 export const galleryPhotoUrl = (photo: GalleryPhoto): string => {
   const token = localStorage.getItem("jwt") || "";
   const separator = photo.proxy_path.includes("?") ? "&" : "?";
-  return `${photo.proxy_path}${separator}t=${encodeURIComponent(token)}`;
+  return `${photo.proxy_path}${separator}token=${encodeURIComponent(token)}`;
 };
 
 export const galleryPhotoProxyUrl = (photo: GalleryPhoto): string => {
