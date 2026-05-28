@@ -63,20 +63,6 @@ const ProjectIcon = ({ active }: { active: boolean }) => (
   </svg>
 );
 
-const GalleryIcon = ({ active }: { active: boolean }) => (
-  <svg
-    viewBox="0 0 24 24"
-    style={iconStyle}
-    fill="none"
-    stroke={active ? colors.primary : "#94a3b8"}
-    strokeWidth="1.8"
-  >
-    <rect x="4" y="5" width="16" height="14" rx="2.5" />
-    <path d="M8 10.5h.01" strokeLinecap="round" />
-    <path d="m7 17 4.2-4.2a1 1 0 0 1 1.4 0L15 15l1.8-1.8a1 1 0 0 1 1.4 0L20 15" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
 const CreateIcon = ({ active }: { active: boolean }) => (
   <svg
     viewBox="0 0 24 24"
@@ -95,7 +81,6 @@ const tabItems = [
   { key: "/board", title: "看板", renderIcon: TeamIcon },
   { key: "/calendar", title: "日历", renderIcon: CalendarIcon },
   { key: "/projects", title: "项目", renderIcon: ProjectIcon },
-  { key: "/gallery", title: "相册", renderIcon: GalleryIcon },
   { key: "/create", title: "录入", renderIcon: CreateIcon },
 ] as const;
 
@@ -119,7 +104,6 @@ const routePrefetchers: Record<string, (() => Promise<unknown>) | undefined> = {
   "/board": () => import("../pages/BoardPage"),
   "/calendar": () => import("../pages/CalendarPage"),
   "/projects": () => import("../pages/ProjectListPage"),
-  "/gallery": () => import("../pages/GalleryPage"),
   "/moments": () => import("../pages/MomentsPage"),
   "/papers/new": () => import("../pages/PaperFormPage"),
   "/competitions/new": () => import("../pages/CompetitionFormPage"),
@@ -138,7 +122,7 @@ const NavBar = () => {
   const pathname = location.pathname;
   const activeKey = pathname === "/profile"
     ? "/"
-    : pathname.startsWith("/board") || pathname.startsWith("/members/")
+    : pathname.startsWith("/board") || pathname.startsWith("/members/") || pathname.startsWith("/gallery")
     ? "/board"
     : pathname.startsWith("/calendar")
       ? "/calendar"

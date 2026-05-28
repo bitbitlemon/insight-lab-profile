@@ -274,17 +274,31 @@ const BoardPage = () => {
           </Card>
         ) : null}
 
-        <Card style={sectionCardStyle}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: colors.title }}>会议纪要</div>
-              <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>查看会议总结、反思与行动项</div>
+        <div className="board-activity-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+          <Card style={sectionCardStyle}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: colors.title }}>会议纪要</div>
+                <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>查看会议总结、反思与行动项</div>
+              </div>
+              <Button size="small" color="primary" fill="outline" onClick={() => navigate("/meeting-notes")}>
+                查看
+              </Button>
             </div>
-            <Button size="small" color="primary" fill="outline" onClick={() => navigate("/meeting-notes")}>
-              查看
-            </Button>
-          </div>
-        </Card>
+          </Card>
+
+          <Card style={sectionCardStyle}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: colors.title }}>实验室相册</div>
+                <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>浏览活动照片与团队影像</div>
+              </div>
+              <Button size="small" color="primary" fill="outline" onClick={() => navigate("/gallery")}>
+                查看
+              </Button>
+            </div>
+          </Card>
+        </div>
 
         <Card style={sectionCardStyle}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
