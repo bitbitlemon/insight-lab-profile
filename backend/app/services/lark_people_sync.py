@@ -253,7 +253,7 @@ async def sync_people_from_lark(
     source: PeopleSyncSource | None = None,
     mark_missing_left: bool | None = None,
 ) -> dict[str, Any]:
-    selected = source or settings.lark_people_sync_default_source or "ehr"
+    selected = source or settings.lark_people_sync_default_source or "contact"
     mark_left = settings.lark_people_sync_mark_missing_left if mark_missing_left is None else mark_missing_left
     errors: list[str] = []
     try:

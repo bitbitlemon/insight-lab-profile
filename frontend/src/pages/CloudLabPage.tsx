@@ -74,6 +74,32 @@ const cloudLabStyles = `
     z-index: 3;
     pointer-events: auto;
   }
+  .cloud-lab-interaction-toolbox {
+    position: absolute;
+    right: 18px;
+    top: 62px;
+    z-index: 4;
+    pointer-events: auto;
+    display: grid;
+    justify-items: end;
+    gap: 8px;
+    font-family: Arial, sans-serif;
+  }
+  .cloud-lab-interaction-menu {
+    width: 124px;
+    display: grid;
+    gap: 6px;
+    border: 1px solid rgba(156,163,175,0.45);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.92);
+    box-shadow: 0 14px 32px rgba(31,41,55,0.14);
+    backdrop-filter: blur(10px);
+    padding: 8px;
+  }
+  .cloud-lab-interaction-menu .cloud-lab-chip-button {
+    width: 100%;
+    text-align: left;
+  }
   .cloud-lab-view-hint {
     position: absolute;
     left: 18px;
@@ -709,6 +735,10 @@ const cloudLabStyles = `
     .cloud-lab-toolbar {
       left: 10px;
       top: 10px;
+    }
+    .cloud-lab-interaction-toolbox {
+      right: 10px;
+      top: 52px;
     }
     .cloud-lab-view-hint {
       left: 10px;
@@ -1567,6 +1597,7 @@ type LabScope = "department" | "all";
 type SpecialtyFilter = "all" | "research" | "development";
 type AreaKey = "workspace" | "classroom" | "meeting_room" | "away";
 type PresenceStatus = "auto" | "working" | "focusing" | "resting" | "classroom" | "meeting_room" | "away";
+type InteractionTool = LabInteractionKind;
 const WORKSTATION_LIMIT = 80;
 const PRESENCE_STORAGE_KEY = "cloud-lab-presence-statuses";
 const FOCUS_STORAGE_KEY = "insight-lab-focus-session";
@@ -2060,17 +2091,23 @@ const LabScene = ({
   chatClusters,
   activeArea,
   selectedId,
+  activeInteractionTool,
+  onUseInteractionTool,
   onSelectMember,
 }: {
   avatars: LabAvatar[];
   chatClusters: LabChatCluster[];
   activeArea: AreaKey | null;
   selectedId?: string | null;
+  activeInteractionTool: InteractionTool | null;
+  onUseInteractionTool: (memberId: string, kind: InteractionTool) => void;
   onSelectMember: (memberId: string) => void;
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const selectedIdRef = useRef<string | null | undefined>(selectedId);
   const onSelectMemberRef = useRef(onSelectMember);
+  const activeInteractionToolRef = useRef<InteractionTool | null>(activeInteractionTool);
+  const onUseInteractionToolRef = useRef(onUseInteractionTool);
   const avatarsRef = useRef(avatars);
   const activeAreaRef = useRef<AreaKey | null>(activeArea);
   const cameraControlsRef = useRef<null | { setArea: (area: AreaKey | null) => void }>(null);
@@ -2087,6 +2124,10 @@ const LabScene = ({
   }, [selectedId]);
 
   useEffect(() => {
+    activeInteractionToolRef.current = activeInteractionTool;
+  }, [activeInteractionTool]);
+
+  useEffect(() => {
     avatarsRef.current = avatars;
   }, [avatars]);
 
@@ -2098,6 +2139,10 @@ const LabScene = ({
   useEffect(() => {
     onSelectMemberRef.current = onSelectMember;
   }, [onSelectMember]);
+
+  useEffect(() => {
+    onUseInteractionToolRef.current = onUseInteractionTool;
+  }, [onUseInteractionTool]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -2852,6 +2897,31 @@ const LabScene = ({
       agent.holdUntil = now + 2.15;
       showAgentEmoji(agent, "fendou", 2.2);
     };
+    const playInteractionEffect = (memberId: string, kind: InteractionTool) => {
+      const agent = agentByMemberId(memberId);
+      if (!agent) return;
+      if (kind === "throw") {
+        launchAgent(memberId);
+        return;
+      }
+      if (kind === "hammer") {
+        showAgentEmoji(agent, "fendou", 2.1);
+        agent.state = "running";
+        agent.holdUntil = clock.elapsedTime + 1.35;
+        agent.rig.group.rotation.z = 0.42;
+        window.setTimeout(() => {
+          agent.rig.group.rotation.z = 0;
+        }, 260);
+        return;
+      }
+      if (kind === "whip") {
+        showAgentEmoji(agent, "bisheng", 2.8);
+        agent.state = "working";
+        agent.holdUntil = clock.elapsedTime + 8;
+        return;
+      }
+      showAgentEmoji(agent, kind === "flower" ? "xiao" : "fendou", 2.4);
+    };
     const xzDistance = (left: THREE.Vector3, right: THREE.Vector3) => Math.hypot(left.x - right.x, left.z - right.z);
     const resetDraggableHome = (object: THREE.Object3D) => {
       const homeParent = object.userData.homeParent as THREE.Object3D | undefined;
@@ -3045,6 +3115,11 @@ const LabScene = ({
       while (parent && !parent.userData.memberId) parent = parent.parent;
       const memberId = parent?.userData.memberId as string | undefined;
       if (memberId) {
+        const tool = activeInteractionToolRef.current;
+        if (tool) {
+          onUseInteractionToolRef.current(memberId, tool);
+          return;
+        }
         handleMemberClick(memberId);
         onSelectMemberRef.current(memberId);
       }
@@ -3072,8 +3147,8 @@ const LabScene = ({
       pressedKeys.delete(event.key.toLowerCase());
     };
     const onThrowAgent = (event: Event) => {
-      const memberId = (event as CustomEvent<{ memberId?: string }>).detail?.memberId;
-      if (memberId) launchAgent(memberId);
+      const detail = (event as CustomEvent<{ memberId?: string; kind?: InteractionTool }>).detail;
+      if (detail?.memberId) playInteractionEffect(detail.memberId, detail.kind || "throw");
     };
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
     renderer.domElement.addEventListener("pointermove", onPointerMove);
@@ -3082,7 +3157,7 @@ const LabScene = ({
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("cloud-lab:throw-agent", onThrowAgent);
+    window.addEventListener("cloud-lab:interaction-effect", onThrowAgent);
     const onContextLost = (event: Event) => {
       event.preventDefault();
       window.cancelAnimationFrame(raf);
@@ -3269,7 +3344,7 @@ const LabScene = ({
       renderer.domElement.removeEventListener("wheel", onWheel);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("cloud-lab:throw-agent", onThrowAgent);
+      window.removeEventListener("cloud-lab:interaction-effect", onThrowAgent);
       renderer.domElement.removeEventListener("webglcontextlost", onContextLost);
       renderer.domElement.removeEventListener("webglcontextrestored", onContextRestored);
       scene.traverse((object) => {
@@ -3456,6 +3531,50 @@ const LabToolbar = ({
       <button type="button" className="cloud-lab-chip-button" data-active={messageConfigOpen} onClick={onToggleMessageConfig}>
         消息群
       </button>
+    ) : null}
+  </div>
+);
+
+const interactionTools: Array<{ kind: InteractionTool; label: string }> = [
+  { kind: "flower", label: "鲜花" },
+  { kind: "egg", label: "鸡蛋" },
+  { kind: "hammer", label: "锤子" },
+  { kind: "whip", label: "鞭子" },
+  { kind: "throw", label: "扔飞" },
+];
+
+const InteractionToolbox = ({
+  open,
+  activeTool,
+  onToggle,
+  onSelectTool,
+}: {
+  open: boolean;
+  activeTool: InteractionTool | null;
+  onToggle: () => void;
+  onSelectTool: (tool: InteractionTool | null) => void;
+}) => (
+  <div className="cloud-lab-interaction-toolbox">
+    <button type="button" className="cloud-lab-chip-button" data-active={open || Boolean(activeTool)} onClick={onToggle}>
+      {activeTool ? interactionTools.find((tool) => tool.kind === activeTool)?.label : "互动"} ▾
+    </button>
+    {open ? (
+      <div className="cloud-lab-interaction-menu">
+        {interactionTools.map((tool) => (
+          <button
+            key={tool.kind}
+            type="button"
+            className="cloud-lab-chip-button"
+            data-active={activeTool === tool.kind}
+            onClick={() => onSelectTool(activeTool === tool.kind ? null : tool.kind)}
+          >
+            {tool.label}
+          </button>
+        ))}
+        <button type="button" className="cloud-lab-chip-button" onClick={() => onSelectTool(null)}>
+          关闭工具
+        </button>
+      </div>
     ) : null}
   </div>
 );
@@ -3800,6 +3919,8 @@ const MemberSheet = ({
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:flower`} onClick={() => onSendInteraction(avatar.id, "flower")}>送鲜花</Button>
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:egg`} onClick={() => onSendInteraction(avatar.id, "egg")}>丢鸡蛋</Button>
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:throw`} onClick={() => onSendInteraction(avatar.id, "throw")}>扔飞</Button>
+            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:hammer`} onClick={() => onSendInteraction(avatar.id, "hammer")}>锤子</Button>
+            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:whip`} onClick={() => onSendInteraction(avatar.id, "whip")}>鞭子</Button>
           </div>
           <div style={{ display: "grid", gap: 7, marginTop: 8 }}>
             <select
@@ -4069,6 +4190,8 @@ const CloudLabPage = () => {
   const [availabilitySlots, setAvailabilitySlots] = useState<Record<string, BusySlot[]>>({});
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [messageConfigOpen, setMessageConfigOpen] = useState(false);
+  const [interactionToolsOpen, setInteractionToolsOpen] = useState(false);
+  const [activeInteractionTool, setActiveInteractionTool] = useState<InteractionTool | null>(null);
   const [labMessageConfig, setLabMessageConfig] = useState<LabMessageConfig | null>(null);
   const [messageConfigDraft, setMessageConfigDraft] = useState({ chat_id: "", chat_name: "" });
   const [memberMessageDraft, setMemberMessageDraft] = useState("");
@@ -4818,10 +4941,14 @@ const CloudLabPage = () => {
           },
         };
       });
-      if (kind === "throw") {
-        window.dispatchEvent(new CustomEvent("cloud-lab:throw-agent", { detail: { memberId } }));
+      if (kind === "whip") {
+        setPresenceStatuses((prev) => ({ ...prev, [memberId]: "working" }));
       }
-      Toast.show({ icon: "success", content: kind === "flower" ? "鲜花已送出" : kind === "egg" ? "鸡蛋已丢出" : "已扔飞" });
+      window.dispatchEvent(new CustomEvent("cloud-lab:interaction-effect", { detail: { memberId, kind } }));
+      Toast.show({
+        icon: "success",
+        content: kind === "flower" ? "鲜花已送出" : kind === "egg" ? "鸡蛋已丢出" : kind === "throw" ? "已扔飞" : kind === "hammer" ? "锤子已砸下" : "已抽成忙碌",
+      });
     } catch {
       Toast.show({ icon: "fail", content: "互动失败" });
     } finally {
@@ -4831,12 +4958,13 @@ const CloudLabPage = () => {
 
   const closeFloatingPanels = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
-    if (target?.closest(".cloud-lab-department-panel, .cloud-lab-member-sheet, .cloud-lab-area-strip, .cloud-lab-toolbar, .cloud-lab-message-config, .cloud-lab-availability-panel")) {
+    if (target?.closest(".cloud-lab-department-panel, .cloud-lab-member-sheet, .cloud-lab-area-strip, .cloud-lab-toolbar, .cloud-lab-interaction-toolbox, .cloud-lab-message-config, .cloud-lab-availability-panel")) {
       return;
     }
     setSelectedId(null);
     setDepartmentPanelOpen(false);
     setAvailabilityOpen(false);
+    setInteractionToolsOpen(false);
     setExpandedDepartments({});
   }, []);
 
@@ -4850,6 +4978,8 @@ const CloudLabPage = () => {
             chatClusters={chatClusters}
             activeArea={selectedArea}
             selectedId={selectedId}
+            activeInteractionTool={activeInteractionTool}
+            onUseInteractionTool={sendLabInteraction}
             onSelectMember={handleSelectMember}
           />
           <div className="cloud-lab-view-hint">
@@ -4869,18 +4999,30 @@ const CloudLabPage = () => {
               });
               setAvailabilityOpen(false);
               setMessageConfigOpen(false);
+              setInteractionToolsOpen(false);
             }}
             onToggleAvailability={() => {
               setAvailabilityOpen((value) => !value);
               setDepartmentPanelOpen(false);
               setMessageConfigOpen(false);
+              setInteractionToolsOpen(false);
               setExpandedDepartments({});
             }}
             onToggleMessageConfig={() => {
               setMessageConfigOpen((value) => !value);
               setDepartmentPanelOpen(false);
               setAvailabilityOpen(false);
+              setInteractionToolsOpen(false);
               setExpandedDepartments({});
+            }}
+          />
+          <InteractionToolbox
+            open={interactionToolsOpen}
+            activeTool={activeInteractionTool}
+            onToggle={() => setInteractionToolsOpen((value) => !value)}
+            onSelectTool={(tool) => {
+              setActiveInteractionTool(tool);
+              setInteractionToolsOpen(Boolean(tool));
             }}
           />
           {availabilityOpen ? (

@@ -172,6 +172,10 @@ def test_lab_interactions(client, admin_user, db_session):
 
     r = client.post("/api/lab/interactions", json={"target_open_id": target.open_id, "kind": "throw"})
     assert r.status_code == 201, r.text
+    r = client.post("/api/lab/interactions", json={"target_open_id": target.open_id, "kind": "hammer"})
+    assert r.status_code == 201, r.text
+    r = client.post("/api/lab/interactions", json={"target_open_id": target.open_id, "kind": "whip"})
+    assert r.status_code == 201, r.text
 
     r = client.get("/api/lab/interactions/summary", params={"member_open_ids": target.open_id})
     assert r.status_code == 200, r.text

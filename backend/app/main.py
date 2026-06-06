@@ -72,6 +72,20 @@ async def lifespan(app: FastAPI):
     LabMessageConfig.__table__.create(bind=engine, checkfirst=True)
     LabDailyReport.__table__.create(bind=engine, checkfirst=True)
     with engine.begin() as conn:
+        lab_interactions_sql = conn.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='lab_interactions'")
+        ).scalar()
+        if lab_interactions_sql and ("hammer" not in lab_interactions_sql or "whip" not in lab_interactions_sql):
+            conn.execute(text("ALTER TABLE lab_interactions RENAME TO lab_interactions_old"))
+            conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_target"))
+            conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_actor"))
+            conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_created"))
+            LabInteraction.__table__.create(bind=conn, checkfirst=True)
+            conn.execute(text(
+                "INSERT INTO lab_interactions (interaction_id, target_open_id, actor_open_id, kind, note, created_at) "
+                "SELECT interaction_id, target_open_id, actor_open_id, kind, note, created_at FROM lab_interactions_old"
+            ))
+            conn.execute(text("DROP TABLE lab_interactions_old"))
         for table in ("projects", "tasks"):
             rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
             if not rows:
