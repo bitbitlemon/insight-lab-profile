@@ -895,7 +895,6 @@ const ProjectListPage = () => {
     startThinking: "",
     actualMinutes: "",
     goalAchieved: "yes" as "yes" | "partly" | "no",
-    deviationReason: "",
     finishReflection: "",
     saveAsKnowledge: true,
     knowledgeTitle: "",
@@ -1097,7 +1096,6 @@ const ProjectListPage = () => {
       startThinking: "",
       actualMinutes: "",
       goalAchieved: "yes",
-      deviationReason: "",
       finishReflection: "",
       saveAsKnowledge: true,
       knowledgeTitle: "",
@@ -1846,7 +1844,6 @@ const ProjectListPage = () => {
       `预计耗时: ${formatMinutes(expectedMinutes)}`,
       `实际耗时: ${formatMinutes(actualMinutes)}`,
       `偏差: ${delta >= 0 ? "+" : ""}${formatMinutes(Math.abs(delta))}`,
-      `偏差原因: ${focusDraft.deviationReason.trim() || "未填写"}`,
       `结束复盘/灵感: ${focusDraft.finishReflection.trim() || "未填写"}`,
     ].join("\n");
     setSavingFocusId(task.task_id);
@@ -2317,8 +2314,6 @@ const ProjectListPage = () => {
                 </select>
               </div>
             </div>
-            <div className="pm-inline-label" style={{ marginTop: 10 }}>偏差原因</div>
-            <textarea className="pm-inline-field pm-inline-textarea" value={focusDraft.deviationReason} disabled={!canEdit || savingFocusId === task.task_id} placeholder="为什么和预计不一致：需求不清、资料缺失、沟通等待、实现复杂度等" onChange={(event) => setFocusDraft((prev) => ({ ...prev, deviationReason: event.target.value }))} />
             <div className="pm-inline-label" style={{ marginTop: 10 }}>结束复盘 / 灵感</div>
             <textarea className="pm-inline-field pm-inline-textarea" value={focusDraft.finishReflection} disabled={!canEdit || savingFocusId === task.task_id} placeholder="沉淀给知识库的要点、下次可复用的方法、遗留想法" onChange={(event) => setFocusDraft((prev) => ({ ...prev, finishReflection: event.target.value }))} />
             <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, color: "#1F2329", fontSize: 12, fontWeight: 700 }}>
@@ -2341,7 +2336,7 @@ const ProjectListPage = () => {
 	            </div>
 	              </>
 	            ) : (
-	              <div className="pm-muted" style={{ marginTop: 6 }}>结束任务、填写偏差原因、复盘和知识沉淀时再展开。</div>
+	              <div className="pm-muted" style={{ marginTop: 6 }}>结束任务、填写复盘和知识沉淀时再展开。</div>
 	            )}
 	          </div>
         </div>
@@ -3570,7 +3565,7 @@ const ProjectListPage = () => {
                       {todayCompletionLines.length ? todayCompletionLines.map((line, index) => `${index + 1}. ${line}`).join("；") : "还没有过程暂存或完成复盘。"}
                     </div>
                   </div>
-                  <div className="pm-muted">整体偏离率来自任务预计区间与专注/完成记录的差异；任务内部仍保留更精细的偏差原因。</div>
+                  <div className="pm-muted">整体偏离率来自任务预计区间与专注/完成记录的差异。</div>
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
