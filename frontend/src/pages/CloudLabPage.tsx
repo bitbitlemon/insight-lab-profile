@@ -4525,13 +4525,6 @@ const MemberSheet = ({
             <Button size="mini" fill="outline" onClick={() => onNavigateProjects(avatar.id)}>项目</Button>
             <Button size="mini" fill="outline" onClick={() => onCreateTask(avatar.id)}>派任务</Button>
             <Button size="mini" fill="outline" onClick={() => onArrangeMeeting(avatar.id)}>约会议</Button>
-            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:flower`} onClick={() => onSendInteraction(avatar.id, "flower")}>送鲜花</Button>
-            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:egg`} onClick={() => onSendInteraction(avatar.id, "egg")}>丢鸡蛋</Button>
-            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:paper_airplane`} onClick={() => onSendInteraction(avatar.id, "paper_airplane")}>纸飞机</Button>
-            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:firework`} onClick={() => onSendInteraction(avatar.id, "firework")}>烟花</Button>
-            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:throw`} onClick={() => onSendInteraction(avatar.id, "throw")}>扔飞</Button>
-            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:hammer`} onClick={() => onSendInteraction(avatar.id, "hammer")}>锤子</Button>
-            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:whip`} onClick={() => onSendInteraction(avatar.id, "whip")}>鞭子</Button>
           </div>
           <div style={{ display: "grid", gap: 7, marginTop: 8 }}>
             <select
