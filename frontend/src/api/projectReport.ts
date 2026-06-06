@@ -45,6 +45,15 @@ export interface PersonReportRow {
   risk_flags: string[];
 }
 
+export interface WeeklyDepartmentMeetingRow {
+  week_start: string;
+  week_end: string;
+  department: string;
+  meetings: number;
+  meeting_hours: number;
+  avg_hours: number;
+}
+
 export interface ProjectRiskRow {
   project_id: number;
   name: string;
@@ -78,6 +87,7 @@ export interface ProjectReportSummary {
   generated_at: string;
   metrics: ReportMetric[];
   departments: DepartmentReportRow[];
+  weekly_meetings: WeeklyDepartmentMeetingRow[];
   people: PersonReportRow[];
   risk_projects: ProjectRiskRow[];
   overdue_tasks: TaskRiskRow[];

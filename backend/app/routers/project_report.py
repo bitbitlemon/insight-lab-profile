@@ -44,6 +44,15 @@ class DepartmentReportRow(BaseModel):
     health_score: int
 
 
+class WeeklyDepartmentMeetingRow(BaseModel):
+    week_start: date
+    week_end: date
+    department: str
+    meetings: int
+    meeting_hours: float
+    avg_hours: float
+
+
 class PersonReportRow(BaseModel):
     member_open_id: str
     member_name: str
@@ -95,6 +104,7 @@ class ProjectReportSummary(BaseModel):
     generated_at: datetime
     metrics: list[ReportMetric]
     departments: list[DepartmentReportRow]
+    weekly_meetings: list[WeeklyDepartmentMeetingRow]
     people: list[PersonReportRow]
     risk_projects: list[ProjectRiskRow]
     overdue_tasks: list[TaskRiskRow]
@@ -157,6 +167,10 @@ def _hours(event: CalendarEvent, start_at: datetime, end_at: datetime) -> float:
     if right <= left:
         return 0.0
     return round((right - left).total_seconds() / 3600, 2)
+
+
+def _week_start(value: date) -> date:
+    return value - timedelta(days=value.weekday())
 
 
 def _health_score(row: dict[str, Any], active_members: int) -> int:
@@ -312,6 +326,7 @@ def project_report_summary(
             CalendarEvent.end_at >= start_at,
         )
     ).scalars().all()
+    weekly_meeting_rows: dict[tuple[date, str], dict[str, Any]] = defaultdict(lambda: {"meetings": 0, "meeting_hours": 0.0})
     for event in events:
         attendees = _event_attendees(event)
         event_hours = _hours(event, start_at, end_at)
@@ -322,6 +337,32 @@ def project_report_summary(
             if open_id in person_rows:
                 person_rows[open_id]["meetings"] += 1
                 person_rows[open_id]["meeting_hours"] += event_hours
+        departments = {
+            _department(member_dept.get(open_id))
+            for open_id in attendees
+            if open_id in member_dept
+        }
+        if event.related_project_id and event.related_project_id in project_dept:
+            departments.add(project_dept[event.related_project_id])
+        if event.organizer_open_id in member_dept:
+            departments.add(member_dept[event.organizer_open_id])
+        departments.discard("未分部门")
+        if not departments:
+            departments.add(dept)
+
+        event_left = max(event.start_at, start_at)
+        event_right = min(event.end_at, end_at)
+        cursor = _week_start(event_left.date())
+        while cursor <= event_right.date():
+            week_left = datetime.combine(max(cursor, start_day), time.min)
+            week_right = datetime.combine(min(cursor + timedelta(days=6), end_day), time.max)
+            week_hours = _hours(event, week_left, week_right)
+            if week_hours > 0:
+                for item_dept in departments:
+                    bucket = weekly_meeting_rows[(cursor, item_dept)]
+                    bucket["meetings"] += 1
+                    bucket["meeting_hours"] += week_hours
+            cursor += timedelta(days=7)
 
     risk_projects: list[ProjectRiskRow] = []
     stale_cutoff = now - timedelta(hours=48)
@@ -421,6 +462,18 @@ def project_report_summary(
             health_score=_health_score(row, active_members),
         ))
     department_payload.sort(key=lambda item: (item.risk_projects, item.overdue_tasks, -item.completed_tasks), reverse=True)
+    weekly_meeting_payload = [
+        WeeklyDepartmentMeetingRow(
+            week_start=week_start,
+            week_end=min(week_start + timedelta(days=6), end_day),
+            department=dept,
+            meetings=int(row["meetings"]),
+            meeting_hours=round(float(row["meeting_hours"]), 1),
+            avg_hours=round(float(row["meeting_hours"]) / max(1, int(row["meetings"])), 1),
+        )
+        for (week_start, dept), row in weekly_meeting_rows.items()
+    ]
+    weekly_meeting_payload.sort(key=lambda item: (item.week_start, item.meetings, item.meeting_hours), reverse=True)
 
     people_payload = []
     for row in person_rows.values():
@@ -452,6 +505,8 @@ def project_report_summary(
     total_risk_projects = len(risk_projects)
     top_dept = max(department_payload, key=lambda item: item.completed_tasks, default=None)
     risk_dept = max(department_payload, key=lambda item: item.risk_projects, default=None)
+    meeting_dept = max(department_payload, key=lambda item: item.meeting_hours, default=None)
+    weekly_peak = max(weekly_meeting_payload, key=lambda item: item.meeting_hours, default=None)
     briefing = (
         f"{start_day} 至 {end_day}，当前进行中项目 {total_active_projects} 个，"
         f"完成任务 {total_completed_tasks} 个，逾期任务 {total_overdue_tasks} 个，"
@@ -461,6 +516,10 @@ def project_report_summary(
         briefing += f" 任务完成最多的是 {top_dept.department}（{top_dept.completed_tasks} 个）。"
     if risk_dept and risk_dept.risk_projects:
         briefing += f" 风险项目主要集中在 {risk_dept.department}（{risk_dept.risk_projects} 个）。"
+    if meeting_dept and meeting_dept.meetings:
+        briefing += f" 小卷看会议对齐：{meeting_dept.department} 会议投入最高（{meeting_dept.meetings} 场、{meeting_dept.meeting_hours} 小时）。"
+    if weekly_peak and weekly_peak.meetings:
+        briefing += f" 单周峰值是 {weekly_peak.week_start} 这周的 {weekly_peak.department}（{weekly_peak.meetings} 场、{weekly_peak.meeting_hours} 小时）。"
 
     return ProjectReportSummary(
         start_date=start_day,
@@ -475,6 +534,7 @@ def project_report_summary(
             ReportMetric(label="会议数", value=total_meetings),
         ],
         departments=department_payload,
+        weekly_meetings=weekly_meeting_payload,
         people=people_payload,
         risk_projects=risk_projects[:80],
         overdue_tasks=overdue_tasks[:100],

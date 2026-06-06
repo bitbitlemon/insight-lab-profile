@@ -168,6 +168,10 @@ const ProjectReportPage = () => {
     open: maxOf(filteredPeople.map((row) => row.open_tasks)),
     messages: maxOf(filteredPeople.map((row) => row.chat_messages)),
   }), [filteredPeople]);
+  const weeklyMeetingMax = useMemo(() => ({
+    meetings: maxOf((summary?.weekly_meetings || []).map((row) => row.meetings)),
+    hours: maxOf((summary?.weekly_meetings || []).map((row) => row.meeting_hours)),
+  }), [summary?.weekly_meetings]);
 
   if (loading) return <><style>{reportStyles}</style><div className="report-page"><SectionLoading text="正在生成项目通报..." /></div></>;
   if (error) {
@@ -309,6 +313,72 @@ const ProjectReportPage = () => {
               </tbody>
             </table>
           </div>
+        </Tabs.Tab>
+        <Tabs.Tab title="会议周报" key="weekly-meetings">
+          <div className="report-toolbar">
+            <div className="report-muted">小卷会议对齐视角：按自然周和部门统计飞书会议次数、会议总时长、单场均时长。跨部门会议会计入参会成员所在部门。</div>
+          </div>
+          <div className="report-grid report-two">
+            <div className="report-panel">
+              <div className="report-panel-title">每周部门会议次数 Top 10</div>
+              <div className="report-bars">
+                {(summary.weekly_meetings || []).slice(0, 10).map((row) => (
+                  <BarRow
+                    key={`${row.week_start}:${row.department}:meetings`}
+                    label={`${row.week_start.slice(5)} ${row.department}`}
+                    value={row.meetings}
+                    max={weeklyMeetingMax.meetings}
+                    color="#0891b2"
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="report-panel">
+              <div className="report-panel-title">每周部门会议时长 Top 10</div>
+              <div className="report-bars">
+                {[...(summary.weekly_meetings || [])].sort((a, b) => b.meeting_hours - a.meeting_hours).slice(0, 10).map((row) => (
+                  <BarRow
+                    key={`${row.week_start}:${row.department}:hours`}
+                    label={`${row.week_start.slice(5)} ${row.department}`}
+                    value={row.meeting_hours}
+                    max={weeklyMeetingMax.hours}
+                    color="#7c3aed"
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="report-table-wrap" style={{ marginTop: 12 }}>
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>周</th>
+                  <th>部门</th>
+                  <th>会议次数</th>
+                  <th>会议总时长</th>
+                  <th>单场均时长</th>
+                  <th>对齐判断</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(summary.weekly_meetings || []).map((row) => (
+                  <tr key={`${row.week_start}:${row.department}`}>
+                    <td>{row.week_start} 至 {row.week_end}</td>
+                    <td><strong>{row.department}</strong></td>
+                    <td className="report-num">{row.meetings}</td>
+                    <td>{row.meeting_hours} 小时</td>
+                    <td>{row.avg_hours} 小时</td>
+                    <td>
+                      <span className={`report-pill ${row.meetings >= 6 || row.meeting_hours >= 8 ? "report-pill-amber" : row.meetings === 0 ? "report-pill-red" : "report-pill-green"}`}>
+                        {row.meetings >= 6 || row.meeting_hours >= 8 ? "对齐密集" : row.meetings === 0 ? "缺少对齐" : "节奏正常"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {!(summary.weekly_meetings || []).length ? <SectionEmpty description="当前时间段没有飞书会议数据" /> : null}
         </Tabs.Tab>
         <Tabs.Tab title="个人" key="people">
           <div className="report-toolbar">
