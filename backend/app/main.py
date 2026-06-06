@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .config import settings
-from .routers import health, auth, sync as sync_router, members, papers, meeting_notes, auto_minute, audit, competitions, contributions, points, projects, tasks, calendar as calendar_router, stats, awards, trainings, advising, grants, industrial, penalties, product_stages, paper_milestones, paper_external, files as files_router, gallery, a_class_achievements as a_class_router, moments as moments_router, voice, lab as lab_router, lark_callbacks, chat_insights, ai_assistants, usage as usage_router
+from .routers import health, auth, sync as sync_router, members, papers, meeting_notes, auto_minute, audit, competitions, contributions, points, projects, tasks, calendar as calendar_router, stats, awards, trainings, advising, grants, industrial, penalties, product_stages, paper_milestones, paper_external, files as files_router, gallery, a_class_achievements as a_class_router, moments as moments_router, voice, lab as lab_router, lark_callbacks, chat_insights, ai_assistants, usage as usage_router, project_report
 from .services.scheduler import start_scheduler, stop_scheduler
 from .services.listener import start_listener, stop_listener
 from .services.audit import install_audit_listeners
@@ -181,6 +181,7 @@ app.include_router(lark_callbacks.router)
 app.include_router(chat_insights.router)
 app.include_router(ai_assistants.router)
 app.include_router(usage_router.router)
+app.include_router(project_report.router)
 
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"

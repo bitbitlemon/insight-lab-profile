@@ -29,6 +29,7 @@ const MeetingFormPage = lazy(() => import("./pages/MeetingFormPage"));
 const MeetingNotesPage = lazy(() => import("./pages/MeetingNotesPage"));
 const AdminConsolePage = lazy(() => import("./pages/AdminConsolePage"));
 const UsageDashboardPage = lazy(() => import("./pages/UsageDashboardPage"));
+const ProjectReportPage = lazy(() => import("./pages/ProjectReportPage"));
 const MomentsPage = lazy(() => import("./pages/MomentsPage"));
 const FileConfirmPage = lazy(() => import("./pages/FileConfirmPage"));
 const NotificationReceiptPage = lazy(() => import("./pages/NotificationReceiptPage"));
@@ -68,6 +69,7 @@ export const routes: RouteObject[] = [
   { path: "/board/leaderboard", element: <LeaderboardPage /> },
   { path: "/admin", element: <AdminConsolePage /> },
   { path: "/admin/usage", element: <UsageDashboardPage /> },
+  { path: "/admin/project-report", element: <ProjectReportPage /> },
   { path: "/members/:open_id", element: <MemberDetailPage /> },
   { path: "/files/confirm", element: <FileConfirmPage /> },
   { path: "/notifications/receipt", element: <NotificationReceiptPage /> },

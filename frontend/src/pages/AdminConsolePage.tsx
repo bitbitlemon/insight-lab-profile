@@ -1592,7 +1592,10 @@ const AdminConsolePage = () => {
               >
                 ← 返回首页
               </button>
-              <Button size="small" onClick={() => navigate("/admin/usage")}>数据后台</Button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button size="small" onClick={() => navigate("/admin/project-report")}>项目通报</Button>
+                <Button size="small" onClick={() => navigate("/admin/usage")}>数据后台</Button>
+              </div>
             </div>
             <div style={{ fontSize: 26, fontWeight: 800, color: colors.title }}>Admin 审批中台</div>
             <div style={{ color: colors.muted, fontSize: 13, lineHeight: 1.7 }}>
