@@ -15,6 +15,7 @@ interface MemberPickerProps {
 
 let membersCache: Member[] | null = null;
 let membersPromise: Promise<Member[]> | null = null;
+const MEMBER_PICKER_FREQUENCY_PREFIX = "insight.memberPicker.frequency.v1";
 
 const fetchAllMembers = async (): Promise<Member[]> => {
   if (membersCache) {
@@ -106,6 +107,43 @@ const selectedChipBaseStyle = {
   color: colors.primaryDeep,
 };
 
+const getCurrentViewerKey = () => {
+  const token = localStorage.getItem("jwt");
+  if (!token) {
+    return "anonymous";
+  }
+  try {
+    const payload = token.split(".")[1];
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+    const parsed = JSON.parse(atob(padded));
+    return parsed.sub || "anonymous";
+  } catch {
+    return "anonymous";
+  }
+};
+
+const getFrequencyStorageKey = () => `${MEMBER_PICKER_FREQUENCY_PREFIX}:${getCurrentViewerKey()}`;
+
+const readMemberFrequency = (): Record<string, number> => {
+  try {
+    const raw = localStorage.getItem(getFrequencyStorageKey());
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const bumpMemberFrequency = (openId: string) => {
+  const current = readMemberFrequency();
+  current[openId] = (Number(current[openId]) || 0) + 1;
+  localStorage.setItem(getFrequencyStorageKey(), JSON.stringify(current));
+};
+
 const MemberPicker = ({
   value,
   onChange,
@@ -117,6 +155,7 @@ const MemberPicker = ({
   const { members, loading, error } = useMemberDirectory();
   const [visible, setVisible] = useState(false);
   const [keyword, setKeyword] = useState("");
+  const [frequencyVersion, setFrequencyVersion] = useState(0);
 
   const selectedIds = useMemo(() => {
     if (multiple) {
@@ -142,6 +181,7 @@ const MemberPicker = ({
 
   const normalizedKeyword = keyword.trim().toLowerCase();
   const excludedIds = useMemo(() => new Set(excludeOpenIds ?? []), [excludeOpenIds]);
+  const memberFrequency = useMemo(() => readMemberFrequency(), [frequencyVersion, visible]);
 
   const groupedMembers = useMemo(() => {
     const filtered = members.filter((member) => {
@@ -156,22 +196,51 @@ const MemberPicker = ({
       return name.includes(normalizedKeyword) || department.includes(normalizedKeyword);
     });
 
-    const groups = filtered.reduce<Record<string, Member[]>>((acc, member) => {
-      const key = member.department?.trim() || "未分组";
-      if (!acc[key]) {
-        acc[key] = [];
+    const compareMembers = (left: Member, right: Member) => {
+      const leftFrequency = memberFrequency[left.open_id] || 0;
+      const rightFrequency = memberFrequency[right.open_id] || 0;
+      if (leftFrequency !== rightFrequency) {
+        return rightFrequency - leftFrequency;
       }
-      acc[key].push(member);
-      return acc;
-    }, {});
+      return (left.name || "").localeCompare(right.name || "", "zh-CN");
+    };
 
-    return Object.entries(groups)
-      .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
+    const frequentMembers = filtered
+      .filter((member) => (memberFrequency[member.open_id] || 0) > 0)
+      .sort(compareMembers)
+      .slice(0, 20);
+    const frequentIds = new Set(frequentMembers.map((member) => member.open_id));
+
+    const groups = filtered
+      .filter((member) => !frequentIds.has(member.open_id))
+      .reduce<Record<string, Member[]>>((acc, member) => {
+        const key = member.department?.trim() || "未分组";
+        if (!acc[key]) {
+          acc[key] = [];
+        }
+        acc[key].push(member);
+        return acc;
+      }, {});
+
+    const departmentGroups = Object.entries(groups)
+      .sort(([leftDepartment, leftItems], [rightDepartment, rightItems]) => {
+        const leftFrequency = Math.max(...leftItems.map((member) => memberFrequency[member.open_id] || 0));
+        const rightFrequency = Math.max(...rightItems.map((member) => memberFrequency[member.open_id] || 0));
+        if (leftFrequency !== rightFrequency) {
+          return rightFrequency - leftFrequency;
+        }
+        return leftDepartment.localeCompare(rightDepartment, "zh-CN");
+      })
       .map(([department, items]) => ({
         department,
-        items: items.sort((left, right) => (left.name || "").localeCompare(right.name || "", "zh-CN")),
+        items: items.sort(compareMembers),
       }));
-  }, [excludedIds, members, normalizedKeyword]);
+
+    if (!frequentMembers.length) {
+      return departmentGroups;
+    }
+    return [{ department: "常用", items: frequentMembers }, ...departmentGroups];
+  }, [excludedIds, memberFrequency, members, normalizedKeyword]);
 
   const emitChange = (nextIds: string[]) => {
     if (!onChange) return;
@@ -180,13 +249,20 @@ const MemberPicker = ({
 
   const handleSelect = (openId: string) => {
     if (multiple) {
-      const nextIds = selectedIds.includes(openId)
+      const selected = selectedIds.includes(openId);
+      if (!selected) {
+        bumpMemberFrequency(openId);
+        setFrequencyVersion((version) => version + 1);
+      }
+      const nextIds = selected
         ? selectedIds.filter((item) => item !== openId)
         : selectedIds.concat(openId);
       emitChange(nextIds);
       return;
     }
 
+    bumpMemberFrequency(openId);
+    setFrequencyVersion((version) => version + 1);
     emitChange([openId]);
     setVisible(false);
   };

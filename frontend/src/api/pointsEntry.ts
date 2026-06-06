@@ -52,6 +52,7 @@ export interface IndustrialSubmitPayload {
   amount_yuan: number;
   scene: IndustrialScene;
   occurred_on: string;
+  project_key?: string;
   note?: string;
 }
 
@@ -88,7 +89,7 @@ export const submitIndustrialPoints = async (payload: IndustrialSubmitPayload): 
   return data;
 };
 
-export const previewIndustrialPoints = async (params: { amount_yuan: number }): Promise<PointsPreview> => {
+export const previewIndustrialPoints = async (params: { amount_yuan: number; project_key?: string }): Promise<PointsPreview> => {
   const { data } = await api.get<PointsPreview>("/industrial/preview", { params });
   return data;
 };

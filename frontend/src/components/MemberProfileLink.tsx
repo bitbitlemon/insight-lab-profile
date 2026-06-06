@@ -22,10 +22,11 @@ interface MemberAvatarLinkProps {
   src?: string;
   name: string;
   size: number;
+  receiptStatus?: "received" | "pending";
   style?: CSSProperties;
 }
 
-export const MemberAvatarLink = ({ openId, viewerOpenId, src, name, size, style }: MemberAvatarLinkProps) => {
+export const MemberAvatarLink = ({ openId, viewerOpenId, src, name, size, receiptStatus, style }: MemberAvatarLinkProps) => {
   const navigate = useNavigate();
 
   return (
@@ -44,9 +45,31 @@ export const MemberAvatarLink = ({ openId, viewerOpenId, src, name, size, style 
         event.stopPropagation();
         navigate(getMemberProfilePath(openId, viewerOpenId));
       }}
-      style={{ ...triggerBaseStyle, ...style }}
+      style={{ ...triggerBaseStyle, position: "relative", ...style }}
     >
       <Avatar src={src} name={name} size={size} />
+      {receiptStatus ? (
+        <span
+          style={{
+            position: "absolute",
+            right: -2,
+            bottom: -2,
+            width: Math.max(14, Math.round(size * 0.36)),
+            height: Math.max(14, Math.round(size * 0.36)),
+            borderRadius: "50%",
+            border: "2px solid #fff",
+            background: receiptStatus === "received" ? "#16a34a" : "#ef4444",
+            color: "#fff",
+            fontSize: Math.max(9, Math.round(size * 0.22)),
+            fontWeight: 900,
+            lineHeight: `${Math.max(14, Math.round(size * 0.36)) - 4}px`,
+            textAlign: "center",
+            boxShadow: "0 2px 8px rgba(15,23,42,0.18)",
+          }}
+        >
+          {receiptStatus === "received" ? "✓" : "×"}
+        </span>
+      ) : null}
     </span>
   );
 };

@@ -70,6 +70,17 @@ async def _push_pending_to_base_job():
             pass
 
 
+async def _sync_class_schedules_job():
+    db = SessionLocal()
+    try:
+        from .class_schedule_sync import sync_class_schedules_from_lark_base
+        await sync_class_schedules_from_lark_base(db)
+    except Exception:
+        pass
+    finally:
+        db.close()
+
+
 def _auto_archive_projects():
     """每天扫: completed 项目超过 7 天 → archived."""
     from datetime import date, datetime, timedelta
@@ -86,6 +97,39 @@ def _auto_archive_projects():
             p.status = "archived"
             p.archived_at = datetime.utcnow()
         db.commit()
+    finally:
+        db.close()
+
+
+def _task_overdue_reminder_job():
+    """每天提醒逾期未完成任务负责人."""
+    from datetime import date, datetime
+    from ..models import Project, Task
+    from .lark_im import notify_task_overdue
+
+    db = SessionLocal()
+    try:
+        now = datetime.now()
+        rows = db.query(Task).filter(
+            Task.assignee_open_id.isnot(None),
+            Task.due_date.isnot(None),
+            Task.due_date < now,
+            Task.status.in_(["todo", "in_progress", "blocked"]),
+        ).order_by(Task.due_date.asc()).limit(200).all()
+        reminder_date = date.today().isoformat()
+        for task in rows:
+            project_name = None
+            if task.project_id:
+                project = db.get(Project, task.project_id)
+                project_name = project.name if project else None
+            notify_task_overdue(
+                assignee_open_id=task.assignee_open_id,
+                task_title=task.title,
+                due_date=task.due_date.strftime("%Y-%m-%d %H:%M"),
+                project_name=project_name,
+                task_id=task.task_id,
+                reminder_date=reminder_date,
+            )
     finally:
         db.close()
 
@@ -109,9 +153,27 @@ def start_scheduler():
         id="auto_archive_projects", replace_existing=True,
     )
     scheduler.add_job(
+        _task_overdue_reminder_job,
+        CronTrigger(hour=11, minute=43),
+        id="task_overdue_reminder", replace_existing=True,
+    )
+    scheduler.add_job(
         _push_pending_to_base_job,
         IntervalTrigger(seconds=90),
         id="push_pending_to_base", replace_existing=True,
+    )
+    scheduler.add_job(
+        _sync_class_schedules_job,
+        IntervalTrigger(minutes=30),
+        id="sync_class_schedules_from_lark", replace_existing=True,
+    )
+    # 待办通报自动发送先停用；保留卡片构建/回执代码，方便后续手动或重新启用。
+    from .chat_cards import sync_and_extract_all_chats
+    # 准实时: 每 2 分钟拉群消息 + 抽取意图 + 自动落地 (complete_task 高置信弹校验卡)
+    scheduler.add_job(
+        sync_and_extract_all_chats,
+        IntervalTrigger(minutes=2),
+        id="chat_realtime_sync_extract", replace_existing=True,
     )
     scheduler.start()
 

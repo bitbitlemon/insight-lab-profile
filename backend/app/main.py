@@ -10,13 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .config import settings
-from .routers import health, auth, sync as sync_router, members, papers, meeting_notes, auto_minute, audit, competitions, contributions, points, projects, tasks, calendar as calendar_router, stats, awards, trainings, advising, grants, industrial, penalties, product_stages, paper_milestones, paper_external, files as files_router, gallery, a_class_achievements as a_class_router, moments as moments_router
+from .routers import health, auth, sync as sync_router, members, papers, meeting_notes, auto_minute, audit, competitions, contributions, points, projects, tasks, calendar as calendar_router, stats, awards, trainings, advising, grants, industrial, penalties, product_stages, paper_milestones, paper_external, files as files_router, gallery, a_class_achievements as a_class_router, moments as moments_router, voice, lab as lab_router, lark_callbacks, chat_insights, ai_assistants
 from .services.scheduler import start_scheduler, stop_scheduler
 from .services.listener import start_listener, stop_listener
 from .services.audit import install_audit_listeners
 from .services.zhangqian_log import _fetch_all_records
 from .services.a_class_log import fetch_all as fetch_a_class_all
 from .middleware import BodySizeLimitMiddleware, SlowRequestLogMiddleware, limiter
+from sqlalchemy import text
+from .db import engine
+from .models import AIAssistantConfig, Contribution, ContributionComment, LabDailyReport, LabMessageConfig, LabOccupancy, LabReservation, LabResource, LabSpace, LarkUserStatus, ProjectLog, ProjectRelation
 
 _log = logging.getLogger(__name__)
 
@@ -56,6 +59,41 @@ async def _prewarm_a_class_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ProjectLog.__table__.create(bind=engine, checkfirst=True)
+    ProjectRelation.__table__.create(bind=engine, checkfirst=True)
+    ContributionComment.__table__.create(bind=engine, checkfirst=True)
+    AIAssistantConfig.__table__.create(bind=engine, checkfirst=True)
+    LarkUserStatus.__table__.create(bind=engine, checkfirst=True)
+    LabSpace.__table__.create(bind=engine, checkfirst=True)
+    LabResource.__table__.create(bind=engine, checkfirst=True)
+    LabReservation.__table__.create(bind=engine, checkfirst=True)
+    LabOccupancy.__table__.create(bind=engine, checkfirst=True)
+    LabMessageConfig.__table__.create(bind=engine, checkfirst=True)
+    LabDailyReport.__table__.create(bind=engine, checkfirst=True)
+    with engine.begin() as conn:
+        for table in ("projects", "tasks"):
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            if not rows:
+                continue
+            columns = {row[1] for row in rows}
+            if "publication_status" not in columns:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN publication_status VARCHAR NOT NULL DEFAULT 'draft'"))
+            if table == "tasks":
+                if "today_todo_date" not in columns:
+                    conn.execute(text("ALTER TABLE tasks ADD COLUMN today_todo_date DATE"))
+                if "thinking" not in columns:
+                    conn.execute(text("ALTER TABLE tasks ADD COLUMN thinking TEXT"))
+                if "progress_draft" not in columns:
+                    conn.execute(text("ALTER TABLE tasks ADD COLUMN progress_draft TEXT"))
+                if "task_origin" not in columns:
+                    conn.execute(text("ALTER TABLE tasks ADD COLUMN task_origin VARCHAR NOT NULL DEFAULT 'manual'"))
+        contribution_rows = conn.execute(text("PRAGMA table_info(contributions)")).fetchall()
+        if contribution_rows:
+            contribution_columns = {row[1] for row in contribution_rows}
+            if "like_count" not in contribution_columns:
+                conn.execute(text("ALTER TABLE contributions ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0"))
+            if "comment_count" not in contribution_columns:
+                conn.execute(text("ALTER TABLE contributions ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0"))
     install_audit_listeners()
     start_scheduler()
     start_listener()
@@ -119,6 +157,11 @@ app.include_router(files_router.router)
 app.include_router(gallery.router)
 app.include_router(a_class_router.router)
 app.include_router(moments_router.router)
+app.include_router(voice.router)
+app.include_router(lab_router.router)
+app.include_router(lark_callbacks.router)
+app.include_router(chat_insights.router)
+app.include_router(ai_assistants.router)
 
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -126,7 +169,10 @@ if FRONTEND_DIST.is_dir():
     app.mount("/assets", CachedStaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 
     @app.get("/", include_in_schema=False)
+    @app.head("/", include_in_schema=False)
+    @app.post("/", include_in_schema=False)
     @app.get("/{full_path:path}", include_in_schema=False)
+    @app.head("/{full_path:path}", include_in_schema=False)
     def spa_index(full_path: str = ""):
         if full_path.startswith("api/"):
             return FileResponse(FRONTEND_DIST / "index.html", status_code=404, headers=_NO_CACHE_HEADERS)

@@ -62,6 +62,27 @@ export interface BusySlot {
   title: string;
 }
 
+export interface FreeBusyResponse {
+  members: string[];
+  range_start: string;
+  range_end: string;
+  busy: BusySlot[];
+}
+
+export interface LarkUserStatus {
+  member_open_id: string;
+  status_id?: string | null;
+  status_type?: string | null;
+  title?: string | null;
+  emoji_key?: string | null;
+  emoji_path?: string | null;
+  presence_status?: "auto" | "working" | "focusing" | "resting" | "classroom" | "meeting_room" | "away" | null;
+  is_active: boolean;
+  start_at?: string | null;
+  end_at?: string | null;
+  updated_at: string;
+}
+
 export interface CreateCalendarEventPayload {
   event_type: EventType;
   title: string;
@@ -102,6 +123,7 @@ export const listCalendarEvents = async (params: {
   end?: string;
   member_open_id?: string;
   event_type?: EventType;
+  related_project_id?: number;
   page?: number;
   page_size?: number;
 }): Promise<Page<CalendarEvent>> => {
@@ -111,6 +133,15 @@ export const listCalendarEvents = async (params: {
 
 export const createCalendarEvent = async (payload: CreateCalendarEventPayload): Promise<CalendarEvent> => {
   const { data } = await api.post<CalendarEvent>("/calendar/events", payload);
+  return data;
+};
+
+export const syncLarkCalendarEvents = async (payload: {
+  calendar_id: string;
+  start?: string;
+  end?: string;
+}): Promise<{ calendar_id: string; fetched: number; created: number; updated: number; skipped: number }> => {
+  const { data } = await api.post("/calendar/events/sync-lark", payload);
   return data;
 };
 
@@ -137,9 +168,15 @@ export const updateCalendarEvent = async (
 
 export const listClassSchedules = async (params: {
   member_open_id?: string;
+  member_open_ids?: string[];
   semester?: string;
 }): Promise<ClassSchedule[]> => {
-  const { data } = await api.get<ClassSchedule[]>("/calendar/classes", { params });
+  const { data } = await api.get<ClassSchedule[]>("/calendar/classes", {
+    params: {
+      ...params,
+      member_open_ids: params.member_open_ids?.join(","),
+    },
+  });
   return data;
 };
 
@@ -186,13 +223,32 @@ export const getFreeBusy = async (params: {
   member_ids: string[];
   start: string;
   end: string;
-}): Promise<BusySlot[]> => {
-  const { data } = await api.get<BusySlot[]>("/calendar/freebusy", {
+}): Promise<FreeBusyResponse> => {
+  const { data } = await api.get<FreeBusyResponse>("/calendar/freebusy", {
     params: {
       member_ids: params.member_ids.join(","),
       start: params.start,
       end: params.end,
     },
   });
+  return data;
+};
+
+export const listLarkUserStatuses = async (params?: {
+  member_open_ids?: string[];
+}): Promise<LarkUserStatus[]> => {
+  const { data } = await api.get<LarkUserStatus[]>("/calendar/lark-statuses", {
+    params: {
+      member_open_ids: params?.member_open_ids?.join(","),
+    },
+  });
+  return data;
+};
+
+export const setLarkUserStatus = async (
+  memberOpenId: string,
+  status: NonNullable<LarkUserStatus["presence_status"]>,
+): Promise<LarkUserStatus | null> => {
+  const { data } = await api.post<LarkUserStatus | null>(`/calendar/lark-statuses/${memberOpenId}`, { status });
   return data;
 };

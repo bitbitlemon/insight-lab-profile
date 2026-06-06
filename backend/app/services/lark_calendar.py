@@ -7,11 +7,21 @@
 返回 ok / lark_event_id / error 三元组.
 """
 from __future__ import annotations
-import json, logging, subprocess
-from datetime import datetime, timezone
+import json, logging, shutil, subprocess
+from datetime import datetime
 from typing import Iterable
 
+from app.config import settings
+
 log = logging.getLogger(__name__)
+
+
+def lark_cli_cmd() -> str:
+    """Return the lark-cli executable path used by calendar sync jobs."""
+    configured = (getattr(settings, "lark_cli_path", "") or "").strip()
+    if configured:
+        return configured
+    return shutil.which("lark-cli") or "lark-cli"
 
 
 def _run(args: list[str], timeout: int = 30) -> dict:
@@ -20,7 +30,11 @@ def _run(args: list[str], timeout: int = 30) -> dict:
         if r.returncode != 0:
             return {"ok": False, "error": r.stderr.strip() or r.stdout.strip() or "non-zero exit"}
         try:
-            return json.loads(r.stdout) if r.stdout.strip() else {"ok": True}
+            parsed = json.loads(r.stdout) if r.stdout.strip() else {}
+            if isinstance(parsed, dict):
+                parsed.setdefault("ok", True)
+                return parsed
+            return {"ok": True, "data": parsed}
         except Exception:
             return {"ok": True, "raw": r.stdout}
     except Exception as e:
@@ -36,7 +50,7 @@ def create_event(
 
     用 bot 写到 app primary 日历, attendee 收到邀请后事件自动出现在其个人日历.
     """
-    args = ["lark-cli", "calendar", "+create",
+    args = [lark_cli_cmd(), "calendar", "+create",
             "--summary", title,
             "--start", start_at.isoformat(),
             "--end", end_at.isoformat()]
@@ -52,10 +66,20 @@ def create_event(
         return {"ok": False, "error": res.get("error") or "create failed"}
     data = res.get("data") or {}
     event = (data.get("event") or {}) if isinstance(data, dict) else {}
+    event_id = (
+        event.get("event_id")
+        or (data.get("event_id") if isinstance(data, dict) else None)
+        or res.get("event_id")
+    )
+    calendar_id = (
+        event.get("calendar_id")
+        or (data.get("calendar_id") if isinstance(data, dict) else None)
+        or res.get("calendar_id")
+    )
     return {
         "ok": True,
-        "event_id": event.get("event_id") or data.get("event_id"),
-        "calendar_id": event.get("calendar_id") or data.get("calendar_id"),
+        "event_id": event_id,
+        "calendar_id": calendar_id,
     }
 
 
@@ -65,7 +89,7 @@ APP_PRIMARY_CALENDAR_ID = "feishu.cn_7HWuqeoj2aN6eAqzMAdC1b@group.calendar.feish
 def delete_event(event_id: str, calendar_id: str | None = None) -> dict:
     cid = calendar_id or APP_PRIMARY_CALENDAR_ID
     params = json.dumps({"calendar_id": cid, "event_id": event_id})
-    args = ["lark-cli", "calendar", "events", "delete",
+    args = [lark_cli_cmd(), "calendar", "events", "delete",
             "--params", params, "--as", "bot", "--format", "json"]
     res = _run(args)
     return res if isinstance(res, dict) else {"ok": False, "error": "unknown"}
@@ -76,7 +100,7 @@ def list_events(
     calendar_id: str | None = None,
 ) -> list[dict]:
     """拉 app primary 日历事件. 返回原始飞书格式 list."""
-    args = ["lark-cli", "calendar", "+agenda",
+    args = [lark_cli_cmd(), "calendar", "+agenda",
             "--start", start_at.isoformat(), "--end", end_at.isoformat(),
             "--as", "bot", "--format", "json"]
     if calendar_id:

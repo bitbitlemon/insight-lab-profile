@@ -1,40 +1,81 @@
 import { api } from "./client";
+import type { ProjectPriority, ProjectStatus, TaskStatus } from "../types/api";
+
+export interface BoardProjectItem {
+  project_id: number;
+  name: string;
+  status: ProjectStatus;
+  priority: ProjectPriority;
+  owner_open_id: string;
+  updated_at: string | null;
+  latest_topic_reply_at: string | null;
+  task_count: number;
+  task_done_count: number;
+  open_task_count: number;
+  is_abnormal?: boolean;
+}
+
+export interface BoardTaskItem {
+  task_id: number;
+  project_id: number | null;
+  project_name?: string | null;
+  project_tags?: string | null;
+  title: string;
+  status: TaskStatus;
+  assignee_open_id: string | null;
+  due_date: string | null;
+  priority: ProjectPriority;
+}
 
 export interface BoardStatsResponse {
+  scope: {
+    department: string | null;
+    manager_open_id: string;
+    manager_name: string;
+  };
   stats: {
     members: number;
-    papers: number;
-    papers_top_tier: number;
-    competitions: number;
-    competitions_won: number;
-    awards: number;
+    projects_total: number;
     active_projects: number;
+    open_projects: number;
     open_tasks: number;
+    standalone_open_tasks: number;
+    blocked_tasks: number;
+    overdue_tasks: number;
+    due_soon_tasks: number;
+    completed_tasks: number;
+    task_completion_rate: number;
+    recently_advanced_projects: number;
+    abnormal_projects: number;
+    no_topic_projects: number;
   };
-  recent_papers: Array<{
-    paper_id: number;
-    title: string;
-    venue: string;
-    venue_level: string | null;
-    year: number;
-    publish_date: string | null;
-    status: string;
+  status_distribution: Array<{
+    status: ProjectStatus;
+    label: string;
+    count: number;
   }>;
-  recent_projects: Array<{
+  recent_projects: BoardProjectItem[];
+  detail_projects: BoardProjectItem[];
+  abnormal_projects: Array<{
     project_id: number;
     name: string;
-    status: string;
-    priority: string;
-    owner_open_id: string;
-    updated_at: string | null;
+    status: ProjectStatus;
+    latest_topic_reply_at: string | null;
+    reason: string;
   }>;
-  recent_tasks: Array<{
-    task_id: number;
-    title: string;
+  recent_tasks: BoardTaskItem[];
+  detail_tasks: BoardTaskItem[];
+  standalone_tasks: BoardTaskItem[];
+  overdue_tasks: BoardTaskItem[];
+  due_soon_tasks: BoardTaskItem[];
+  department_members: Array<{
+    open_id: string;
+    name: string;
+    avatar_url: string | null;
+    title: string | null;
+    position: string | null;
+    role: string;
     status: string;
-    assignee_open_id: string | null;
-    due_date: string | null;
-    priority: string;
   }>;
 }
 

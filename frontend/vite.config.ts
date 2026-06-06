@@ -17,6 +17,8 @@ export default defineConfig({
   build: {
     // terser 比 esbuild 压得更小, plugin-legacy 也需要它
     minify: "terser",
+    // three/antd 的 legacy 包已拆成可缓存 vendor chunk, 体积略高于 Vite 默认 500k 阈值。
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         // 对象式分块: 由 rollup 计算各入口包的依赖闭包并去重, 不会像函数式那样
@@ -25,6 +27,7 @@ export default defineConfig({
         manualChunks: {
           "react-vendor": ["react", "react-dom", "react-router-dom"],
           "antd-vendor": ["antd-mobile"],
+          "three-vendor": ["three"],
           "utils-vendor": ["axios"],
         },
       },

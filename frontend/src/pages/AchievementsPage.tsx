@@ -122,8 +122,8 @@ const AchievementsPage = () => {
               ) : null}
               {pdfCount > 0 || imageCount > 0 ? (
                 <div style={{ marginTop: 10, ...attachmentBadgeStyle }}>
-                  {pdfCount > 0 ? <span>📄 {pdfCount}</span> : null}
-                  {imageCount > 0 ? <span>🖼 {imageCount}</span> : null}
+                  {pdfCount > 0 ? <span><img src="/emojis/kan.png" alt="" style={{ width: 14, height: 14, objectFit: "contain", verticalAlign: "-2px" }} /> {pdfCount}</span> : null}
+                  {imageCount > 0 ? <span><img src="/emojis/xiaohonghua.png" alt="" style={{ width: 14, height: 14, objectFit: "contain", verticalAlign: "-2px" }} /> {imageCount}</span> : null}
                 </div>
               ) : null}
             </button>

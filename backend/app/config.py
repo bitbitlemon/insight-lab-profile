@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     lark_table_projects: str = ""
     lark_table_tasks: str = ""
     lark_table_paper_milestones: str = ""
+    lark_schedule_base_app_token: str = "QvVVbiCMLaCFRQscVdScbHdMnhe"
+    lark_schedule_table_id: str = "tblZOAqSV1HsVg01"
+    lark_schedule_view_id: str = "vewaaW2Ufo"
 
     # 张迁组论文日志/过程文档外部 Base (独立 Base, 非主 lark_base_app_token)
     lark_zhangqian_log_app_token: str = "Zkb8b0Gdaa0kVissTz0cuZOBnCe"
@@ -43,6 +46,12 @@ class Settings(BaseSettings):
     request_max_body_bytes: int = 2 * 1024 * 1024   # 2MB
     upload_max_body_bytes: int = 25 * 1024 * 1024   # 25MB (附件上传, 与 lark drive single-shot 限制一致)
     slow_query_threshold_ms: int = 500
+
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
+
+    lark_cli_path: str = "/home/ubuntu/.npm-global/bin/lark-cli"
 
     sync_incremental_interval_sec: int = 300
     sync_full_cron_hour: int = 3

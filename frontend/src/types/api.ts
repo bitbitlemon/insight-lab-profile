@@ -93,15 +93,147 @@ export interface MeetingNote {
 
 export type ProjectStatus = "planning" | "active" | "paused" | "completed" | "archived";
 export type ProjectPriority = "low" | "medium" | "high" | "urgent";
+export type ProjectType = "personal" | "team";
 export type PMRole = "owner" | "co_lead" | "member" | "observer";
 export type TaskStatus = "todo" | "in_progress" | "done" | "blocked" | "cancelled";
+export type PublicationStatus = "draft" | "published";
+export type ProjectRelationType = "transformed_to" | "derived" | "related";
 
 export interface ProjectMember {
   member_open_id: string;
   role: PMRole;
   share_ratio: number;
+  tags?: string | null;
+  received_at?: string | null;
   joined_at: string;
   left_at: string | null;
+}
+
+export interface ProjectChat {
+  project_chat_id: number;
+  project_id: number;
+  chat_id: string;
+  chat_name?: string | null;
+  description?: string | null;
+  selected_topic_key?: string | null;
+  selected_topic_title?: string | null;
+  sync_enabled: boolean;
+  last_synced_at?: string | null;
+  last_message_at?: string | null;
+  latest_topic_key?: string | null;
+  latest_topic_title?: string | null;
+  latest_topic_reply_at?: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  topic_count: number;
+  message_count: number;
+  is_stale?: boolean;
+  stale_reason?: string | null;
+}
+
+export interface ProjectChatTopic {
+  project_chat_topic_id: number;
+  project_chat_id: number;
+  project_id: number;
+  topic_key: string;
+  title?: string | null;
+  first_message_id?: string | null;
+  first_sender_open_id?: string | null;
+  last_message_id?: string | null;
+  last_reply_at?: string | null;
+  reply_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectChatMessage {
+  project_chat_message_id: number;
+  project_chat_id: number;
+  project_id: number;
+  chat_id: string;
+  message_id: string;
+  topic_key: string;
+  root_id?: string | null;
+  parent_id?: string | null;
+  thread_id?: string | null;
+  sender_open_id?: string | null;
+  sender_name?: string | null;
+  sender_type?: string | null;
+  msg_type?: string | null;
+  content?: string | null;
+  deleted: boolean;
+  updated: boolean;
+  message_created_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectLog {
+  log_id: number;
+  project_id: number;
+  actor_open_id: string;
+  actor_name?: string | null;
+  kind: "note" | "guidance" | "server" | "member_change" | "paper_stage" | "notification";
+  kind_label: string;
+  status: "recorded" | "pending" | "pending_approval" | "approved" | "rejected" | "notified";
+  status_label: string;
+  title: string;
+  body?: string | null;
+  target_open_id?: string | null;
+  target_name?: string | null;
+  approver_open_id?: string | null;
+  approver_name?: string | null;
+  resource_type?: string | null;
+  old_value?: string | null;
+  new_value?: string | null;
+  paper_id?: number | null;
+  paper_stage?: string | null;
+  paper_status?: string | null;
+  notified_at?: string | null;
+  approved_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectRelation {
+  relation_id: number;
+  source_project_id: number;
+  target_project_id: number;
+  project_id: number;
+  project_name: string;
+  project_status: ProjectStatus;
+  project_type: ProjectType;
+  tags?: string | null;
+  relation_type: ProjectRelationType;
+  relation_label: string;
+  direction: "outgoing" | "incoming";
+  title?: string | null;
+  description?: string | null;
+  created_by: string;
+  created_by_name?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LarkVisibleChat {
+  chat_id: string;
+  name?: string | null;
+  description?: string | null;
+  avatar?: string | null;
+  chat_mode?: string | null;
+  chat_status?: string | null;
+  external?: boolean | null;
+  owner_id?: string | null;
+  create_time?: string | null;
+}
+
+export interface LarkChatTopicPreview {
+  topic_key: string;
+  title?: string | null;
+  last_reply_at?: string | null;
+  reply_count: number;
+  last_message_id?: string | null;
 }
 
 export interface Project {
@@ -109,7 +241,10 @@ export interface Project {
   name: string;
   description: string | null;
   status: ProjectStatus;
+  publication_status?: PublicationStatus;
   priority: ProjectPriority;
+  project_type: ProjectType;
+  my_project_type?: ProjectType | null;
   owner_open_id: string;
   department: string | null;
   start_date: string | null;
@@ -122,24 +257,91 @@ export interface Project {
   created_at: string;
   updated_at: string;
   members: ProjectMember[];
+  chats: ProjectChat[];
   days_active: number;
   task_count: number;
   task_done_count: number;
+  is_abnormal?: boolean;
+  abnormal_reason?: string | null;
+  abnormal_chat_count?: number;
 }
 
 export interface Task {
   task_id: number;
   project_id: number | null;
+  project_name?: string | null;
+  project_tags?: string | null;
   parent_task_id: number | null;
   title: string;
   description: string | null;
   status: TaskStatus;
+  publication_status?: PublicationStatus;
   priority: ProjectPriority;
   assignee_open_id: string | null;
   planned_start_date: string | null;
   due_date: string | null;
+  today_todo_date?: string | null;
+  thinking?: string | null;
+  progress_draft?: string | null;
+  task_origin?: "manual" | "chat_ai" | string;
+  received_at?: string | null;
   completed_at: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ChangeLogEntry {
+  log_id: number;
+  actor_open_id: string;
+  actor_name?: string | null;
+  action: "create" | "update" | "delete" | "export";
+  target_table: string;
+  target_id: string;
+  changes: {
+    before?: Record<string, unknown>;
+    after?: Record<string, unknown>;
+    delta?: Record<string, { before?: unknown; after?: unknown }>;
+  };
+  created_at: string;
+}
+
+export interface MemberWorkloadTask {
+  task_id: number;
+  project_id: number | null;
+  project_name?: string | null;
+  title: string;
+  description?: string | null;
+  status: TaskStatus;
+  priority: ProjectPriority;
+  due_date?: string | null;
+  completed_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface MemberWorkload {
+  member: {
+    open_id: string;
+    name: string;
+    avatar_url?: string | null;
+    department?: string | null;
+    title?: string | null;
+    position?: string | null;
+  };
+  detail_visible: boolean;
+  visibility_reason: string;
+  summary: {
+    total_tasks: number;
+    open_tasks: number;
+    todo_tasks: number;
+    in_progress_tasks: number;
+    blocked_tasks: number;
+    done_tasks: number;
+    overdue_tasks: number;
+    active_project_count: number;
+    capacity_score: number;
+    capacity_label: string;
+  };
+  tasks: MemberWorkloadTask[];
+  recent_done_tasks: MemberWorkloadTask[];
 }

@@ -1,0 +1,18 @@
+[Unit]
+Description=insight-lab-profile stable web entry (:8081)
+After=network-online.target insight-lab-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/insight-lab-profile
+ExecStart=/usr/bin/python3 /home/ubuntu/insight-lab-profile/scripts/spa_proxy.py --host 127.0.0.1 --port 8081 --dist /home/ubuntu/insight-lab-profile/frontend/dist --backend http://127.0.0.1:8080
+Restart=always
+RestartSec=3s
+StandardOutput=append:/tmp/insight_lab_web.log
+StandardError=append:/tmp/insight_lab_web.log
+KillSignal=SIGINT
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=default.target

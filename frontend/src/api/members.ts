@@ -1,5 +1,5 @@
 import { api } from "./client";
-import type { Page, Member } from "../types/api";
+import type { Page, Member, MemberWorkload } from "../types/api";
 
 export const listMembers = async (params?: {
   department?: string;
@@ -14,6 +14,19 @@ export const listMembers = async (params?: {
 
 export const getMember = async (open_id: string): Promise<Member> => {
   const { data } = await api.get<Member>(`/members/${open_id}`);
+  return data;
+};
+
+export const getMemberWorkload = async (open_id: string): Promise<MemberWorkload> => {
+  const { data } = await api.get<MemberWorkload>(`/members/${open_id}/workload`);
+  return data;
+};
+
+export const getMemberWorkloads = async (open_ids: string[]): Promise<Record<string, MemberWorkload>> => {
+  if (!open_ids.length) return {};
+  const { data } = await api.get<Record<string, MemberWorkload>>("/members/workloads/bulk", {
+    params: { open_ids: open_ids.join(",") },
+  });
   return data;
 };
 

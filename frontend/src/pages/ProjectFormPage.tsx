@@ -1,15 +1,15 @@
 import type { CSSProperties } from "react";
-import { useEffect, useMemo, useState } from "react";
-import { Button, DatePicker, Dialog, Form, Input, ProgressBar, Selector, TextArea, Toast } from "antd-mobile";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button, DatePicker, Form, Input, Selector, TextArea, Toast } from "antd-mobile";
 import type { SelectorOption } from "antd-mobile/es/components/selector";
 import { useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
-import { addProjectMember, createProject, getProject, updateProject, type ProjectMemberInput } from "../api/projects";
+import { addProjectMember, createProject, getProject, publishProject, updateProject, type ProjectMemberInput } from "../api/projects";
 import { createTask, type TaskPayload } from "../api/tasks";
 import MemberPicker, { useMemberDirectory } from "../components/MemberPicker";
 import { PageShell, SectionError, SectionLoading, chipStyle, colors, priorityTone, sectionCardStyle } from "../components/ui";
 import { useAuth } from "../hooks/useAuth";
-import type { PMRole, Project, ProjectPriority } from "../types/api";
+import type { Project, ProjectPriority, ProjectType } from "../types/api";
 
 const priorityOptions: SelectorOption<string>[] = [
   { label: "低", value: "low" },
@@ -18,20 +18,59 @@ const priorityOptions: SelectorOption<string>[] = [
   { label: "紧急", value: "urgent" },
 ];
 
-type MemberUiRole =
-  | "pi"
-  | "rd_lead"
-  | "doc_lead"
-  | "qa_lead"
-  | "data_lead"
-  | "member"
-  | "advisor"
-  | "observer";
+const projectTypeOptions: SelectorOption<ProjectType>[] = [
+  { label: "团队项目", value: "team" },
+  { label: "个人项目", value: "personal" },
+];
+
+const projectCategoryValues = ["开发", "科研", "比赛", "培训"] as const;
+type ProjectCategory = (typeof projectCategoryValues)[number];
+
+const projectCategoryOptions: SelectorOption<ProjectCategory>[] = projectCategoryValues.map((value) => ({
+  label: value,
+  value,
+}));
+
+const splitTags = (value?: string | null) =>
+  (value || "")
+    .split(/[,\s，、#]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+const readProjectCategory = (tags?: string | null): ProjectCategory => {
+  const found = splitTags(tags).find((tag): tag is ProjectCategory => projectCategoryValues.includes(tag as ProjectCategory));
+  return found || "开发";
+};
+
+const readExtraTags = (tags?: string | null): string => {
+  const categorySet = new Set<string>(projectCategoryValues);
+  return splitTags(tags).filter((tag) => !categorySet.has(tag)).join(", ");
+};
+
+const buildProjectTags = (category: ProjectCategory, extraTags: unknown): string => {
+  const extra = splitTags(String(extraTags || ""));
+  return [category, ...extra].join(", ");
+};
+
+const projectFormStyles = `
+  .project-form-page .adm-selector-item {
+    min-height: 40px;
+    height: auto;
+    padding: 8px 10px;
+    line-height: 1.35;
+    white-space: normal;
+    word-break: break-word;
+  }
+  .project-form-page .adm-selector-item .adm-selector-item-content {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+`;
 
 type MemberDraft = {
   temp_id: string;
   member_open_id: string;
-  ui_role: MemberUiRole;
   share_ratio: number;
   tags: string;
 };
@@ -44,40 +83,24 @@ type TaskDraft = {
   due_date: Date | null;
 };
 
-const memberUiRoleOptions: SelectorOption<string>[] = [
-  { label: "首席研究员 / PI", value: "pi" },
-  { label: "开发负责人 / RD-Lead", value: "rd_lead" },
-  { label: "文档负责人 / Doc-Lead", value: "doc_lead" },
-  { label: "测试负责人 / QA", value: "qa_lead" },
-  { label: "数据负责人 / Data", value: "data_lead" },
-  { label: "普通成员 / Member", value: "member" },
-  { label: "顾问 / Advisor", value: "advisor" },
-  { label: "观察员 / Observer", value: "observer" },
-];
-
-const memberUiRoleLabel: Record<MemberUiRole, string> = {
-  pi: "PI",
-  rd_lead: "RD-Lead",
-  doc_lead: "Doc-Lead",
-  qa_lead: "QA",
-  data_lead: "Data",
-  member: "Member",
-  advisor: "Advisor",
-  observer: "Observer",
-};
-
-const mapUiRoleToBackendRole = (role: MemberUiRole): PMRole => {
-  if (role === "observer") return "observer";
-  if (role === "member" || role === "advisor") return "member";
-  return "co_lead";
-};
-
-const formatDate = (value?: Date | null) => {
-  if (!value) return "请选择日期";
+const formatDateTime = (value?: Date | null) => {
+  if (!value) return "请选择日期和时间";
   const year = value.getFullYear();
   const month = `${value.getMonth() + 1}`.padStart(2, "0");
   const day = `${value.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  const hour = `${value.getHours()}`.padStart(2, "0");
+  const minute = `${value.getMinutes()}`.padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+};
+
+const toLocalDateTimePayload = (value?: Date | null) => {
+  if (!value) return null;
+  const year = value.getFullYear();
+  const month = `${value.getMonth() + 1}`.padStart(2, "0");
+  const day = `${value.getDate()}`.padStart(2, "0");
+  const hour = `${value.getHours()}`.padStart(2, "0");
+  const minute = `${value.getMinutes()}`.padStart(2, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}:00`;
 };
 
 const addDays = (days: number) => {
@@ -107,8 +130,10 @@ const ProjectFormPage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [pageLoading, setPageLoading] = useState(isEdit);
   const [project, setProject] = useState<Project | null>(null);
+  const [projectType, setProjectType] = useState<ProjectType>("team");
   const [memberDrafts, setMemberDrafts] = useState<MemberDraft[]>([]);
   const [taskDrafts, setTaskDrafts] = useState<TaskDraft[]>([]);
+  const submitIntentRef = useRef<"draft" | "publish">("draft");
 
   useEffect(() => {
     if (!isEdit || !project_id) return;
@@ -122,20 +147,22 @@ const ProjectFormPage = () => {
         form.setFieldsValue({
           name: project.name,
           description: project.description || "",
+          project_type: [project.project_type || "team"],
+          project_category: [readProjectCategory(project.tags)],
           priority: [project.priority],
           department: project.department ? [project.department] : [],
           target_end_date: project.target_end_date ? new Date(project.target_end_date) : undefined,
-          tags: project.tags || "",
+          tags: readExtraTags(project.tags),
         });
+        setProjectType(project.project_type || "team");
         setMemberDrafts(
           project.members
             .filter((member) => !member.left_at && member.role !== "owner")
             .map((member, index) => ({
               temp_id: `${member.member_open_id}-${index}`,
               member_open_id: member.member_open_id,
-              ui_role: member.role === "observer" ? "observer" : member.role === "co_lead" ? "pi" : "member",
               share_ratio: member.share_ratio,
-              tags: "",
+              tags: member.tags || "",
             })),
         );
       })
@@ -173,20 +200,9 @@ const ProjectFormPage = () => {
     [allMembers],
   );
 
-  const memberShareTotal = useMemo(
-    () => memberDrafts.reduce((sum, member) => sum + (Number.isFinite(member.share_ratio) ? member.share_ratio : 0), 0),
-    [memberDrafts],
-  );
-
-  const shareTotalPercent = Math.max(0, Math.min(100, memberShareTotal * 100));
-  const isShareBalanced = Math.abs(memberShareTotal - 1) <= 0.01;
-  const hasZeroShare = memberDrafts.some((member) => member.share_ratio <= 0);
-
   const resetMemberFields = () => {
     form.setFieldsValue({
       member_open_id: undefined,
-      member_role: ["member"],
-      member_share_ratio: "0",
       member_tags: "",
     });
   };
@@ -205,8 +221,7 @@ const ProjectFormPage = () => {
       prev.concat({
         temp_id: `${memberOpenId}-${Date.now()}`,
         member_open_id: memberOpenId,
-        ui_role: (Array.isArray(values.member_role) ? values.member_role[0] : "member") as MemberUiRole,
-        share_ratio: Number(values.member_share_ratio || 0) || 0,
+        share_ratio: 0,
         tags: String(values.member_tags || "").trim(),
       }),
     );
@@ -278,42 +293,29 @@ const ProjectFormPage = () => {
     );
   };
 
-  const confirmBeforeSubmit = async () => {
-    if (memberDrafts.length === 0) return true;
-    if (isShareBalanced && !hasZeroShare) return true;
-    return Dialog.confirm({
-      title: "成员占比尚未平衡",
-      content: hasZeroShare
-        ? "当前有成员占比为 0%，建议平均分配后再提交。是否继续？"
-        : "当前成员占比总和未接近 100%，建议调整后再提交。是否继续？",
-      confirmText: "继续提交",
-      cancelText: "返回调整",
-    });
-  };
-
   const onFinish = async (values: Record<string, unknown>) => {
     if (!me) {
       Toast.show({ icon: "fail", content: "当前未登录" });
       return;
     }
 
-    const canContinue = await confirmBeforeSubmit();
-    if (!canContinue) return;
-
     const payload = {
       name: String(values.name || "").trim(),
       description: String(values.description || "").trim() || null,
+      project_type: (Array.isArray(values.project_type) ? values.project_type[0] : projectType) as ProjectType,
       priority: (Array.isArray(values.priority) ? values.priority[0] : "medium") as ProjectPriority,
       department: String(Array.isArray(values.department) ? values.department[0] || "" : values.department || "").trim() || null,
-      target_end_date: values.target_end_date instanceof Date ? formatDate(values.target_end_date) : null,
-      tags: String(values.tags || "").trim() || null,
+      target_end_date: values.target_end_date instanceof Date ? toLocalDateTimePayload(values.target_end_date) : null,
+      tags: buildProjectTags((Array.isArray(values.project_category) ? values.project_category[0] : "开发") as ProjectCategory, values.tags),
       points_awarded: isEdit ? project?.points_awarded ?? 0 : 0,
     };
 
-    const memberPayload: ProjectMemberInput[] = memberDrafts.map((member) => ({
+    const isPersonalProject = payload.project_type === "personal";
+    const memberPayload: ProjectMemberInput[] = isPersonalProject ? [] : memberDrafts.map((member) => ({
       member_open_id: member.member_open_id,
-      role: mapUiRoleToBackendRole(member.ui_role),
+      role: "member",
       share_ratio: member.share_ratio,
+      tags: member.tags || null,
     }));
 
     const taskPayloads: TaskPayload[] = taskDrafts
@@ -321,13 +323,14 @@ const ProjectFormPage = () => {
         title: task.title.trim(),
         assignee_open_id: task.assignee_open_id || null,
         priority: task.priority,
-        due_date: task.due_date ? formatDate(task.due_date) : null,
+        due_date: task.due_date ? toLocalDateTimePayload(task.due_date) : null,
         status: "todo" as const,
       }))
       .filter((task) => task.title);
 
     setSubmitting(true);
     try {
+      const shouldPublish = submitIntentRef.current === "publish";
       if (isEdit && project_id) {
         const current = await getProject(project_id);
         await updateProject(project_id, payload);
@@ -336,7 +339,10 @@ const ProjectFormPage = () => {
         for (const member of newMembers) {
           await addProjectMember(project_id, member);
         }
-        Toast.show({ icon: "success", content: "项目已更新" });
+        if (shouldPublish) {
+          await publishProject(project_id);
+        }
+        Toast.show({ icon: "success", content: shouldPublish ? "项目已发布并通知成员" : "项目已保存" });
         navigate(`/projects/${project_id}`);
         return;
       }
@@ -350,7 +356,18 @@ const ProjectFormPage = () => {
         await createTask({ ...task, project_id: created.project_id });
       }
 
-      Toast.show({ icon: "success", content: taskPayloads.length ? "项目和初始任务已创建" : "项目已创建" });
+      if (shouldPublish) {
+        await publishProject(created.project_id);
+      }
+
+      Toast.show({
+        icon: "success",
+        content: shouldPublish
+          ? "项目已发布并通知成员"
+          : taskPayloads.length
+            ? "项目和初始任务已暂存"
+            : "项目已暂存",
+      });
       navigate(`/projects/${created.project_id}`);
     } catch (err) {
       Toast.show({ icon: "fail", content: extractMessage(err) });
@@ -377,7 +394,8 @@ const ProjectFormPage = () => {
 
   return (
     <PageShell>
-      <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 96 }}>
+      <style>{projectFormStyles}</style>
+      <div className="project-form-page" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 96 }}>
         <Button
           fill="none"
           style={{ alignSelf: "flex-start", padding: 0, "--text-color": colors.primaryDeep } as CSSProperties}
@@ -391,11 +409,31 @@ const ProjectFormPage = () => {
           form={form}
           layout="vertical"
           onFinish={onFinish}
-          initialValues={{ priority: ["medium"], member_role: ["member"], member_share_ratio: "0" }}
+          initialValues={{ project_type: ["team"], project_category: ["开发"], priority: ["medium"] }}
           footer={
-            <Button block type="submit" color="primary" loading={submitting}>
-              {isEdit ? "保存项目" : "创建项目"}
-            </Button>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Button
+                block
+                loading={submitting && submitIntentRef.current === "draft"}
+                onClick={() => {
+                  submitIntentRef.current = "draft";
+                  form.submit();
+                }}
+              >
+                {isEdit ? "保存修改" : "暂存项目"}
+              </Button>
+              <Button
+                block
+                color="primary"
+                loading={submitting && submitIntentRef.current === "publish"}
+                onClick={() => {
+                  submitIntentRef.current = "publish";
+                  form.submit();
+                }}
+              >
+                确认发布
+              </Button>
+            </div>
           }
           style={{ display: "flex", flexDirection: "column", gap: 14 }}
         >
@@ -406,6 +444,23 @@ const ProjectFormPage = () => {
               </Form.Item>
               <Form.Item name="description" label="项目描述">
                 <TextArea placeholder="补充背景、目标、阶段安排" autoSize={{ minRows: 3, maxRows: 6 }} />
+              </Form.Item>
+              <Form.Item name="project_type" label="项目类型">
+                <Selector
+                  options={projectTypeOptions}
+                  columns={2}
+                  showCheckMark={false}
+                  onChange={(next) => {
+                    const nextType = (next[0] || "team") as ProjectType;
+                    setProjectType(nextType);
+                    if (nextType === "personal") {
+                      setMemberDrafts([]);
+                    }
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="project_category" label="分类标签" rules={[{ required: true, message: "请选择分类标签" }]}>
+                <Selector options={projectCategoryOptions} columns={4} showCheckMark={false} />
               </Form.Item>
               <Form.Item name="priority" label="优先级">
                 <Selector options={priorityOptions} columns={4} showCheckMark={false} />
@@ -419,7 +474,7 @@ const ProjectFormPage = () => {
                 trigger="onConfirm"
                 onClick={(_, ref) => ref.current?.open()}
               >
-                <DatePicker precision="day">
+                <DatePicker precision="minute">
                   {(value) => (
                     <div
                       style={{
@@ -431,27 +486,26 @@ const ProjectFormPage = () => {
                         border: `1px solid ${colors.border}`,
                       }}
                     >
-                      {formatDate(value)}
+                      {formatDateTime(value)}
                     </div>
                   )}
                 </DatePicker>
               </Form.Item>
-              <Form.Item name="tags" label="标签">
+              <Form.Item name="tags" label="额外标签">
                 <Input placeholder="例如：前端, 知识库, 自动化" clearable />
               </Form.Item>
             </div>
           </div>
 
+          {projectType === "team" ? (
           <div style={sectionCardStyle}>
             <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: colors.title }}>项目成员</div>
-                  <div style={{ marginTop: 4, color: colors.muted, fontSize: 12 }}>像论文作者一样维护顺序、角色和占比</div>
-                </div>
-                <span style={chipStyle(isShareBalanced ? "#dcfce7" : "#fef3c7", isShareBalanced ? "#15803d" : "#92400e")}>
-                  当前 {memberDrafts.length} 人
-                </span>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: colors.title }}>执行成员</div>
+                    <div style={{ marginTop: 4, color: colors.muted, fontSize: 12 }}>团队项目用于多人协作和管理视角；实际动手推进的人放在这里</div>
+                  </div>
+                <span style={chipStyle("#eef2ff", "#4338ca")}>当前 {memberDrafts.length} 人</span>
               </div>
 
               <div
@@ -462,39 +516,17 @@ const ProjectFormPage = () => {
                   padding: 12,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                  <div style={{ color: colors.title, fontSize: 13, fontWeight: 700 }}>贡献占比</div>
-                  <div style={{ color: isShareBalanced ? "#15803d" : "#92400e", fontSize: 12, fontWeight: 700 }}>
-                    {(memberShareTotal * 100).toFixed(0)}%
-                  </div>
-                </div>
-                <div style={{ marginTop: 8 }}>
-                  <ProgressBar
-                    percent={shareTotalPercent}
-                    style={
-                      {
-                        "--track-width": "8px",
-                        "--fill-color": isShareBalanced ? "#10b981" : "#f59e0b",
-                      } as CSSProperties
-                    }
-                  />
-                </div>
-                <div style={{ marginTop: 8, color: colors.muted, fontSize: 12 }}>
-                  建议总和接近 100%。允许先录入 0% 或未分满，提交时会二次确认。
+                <div style={{ color: colors.title, fontSize: 13, fontWeight: 700 }}>积分分配开发中</div>
+                <div style={{ marginTop: 6, color: colors.muted, fontSize: 12 }}>
+                  当前阶段先维护项目成员、任务和确认状态；积分后续由负责人统一分配。
                 </div>
               </div>
 
               <Form.Item name="member_open_id" label="成员">
                 <MemberPicker placeholder="搜索成员姓名 / 部门" excludeOpenIds={memberDrafts.map((member) => member.member_open_id)} />
               </Form.Item>
-              <Form.Item name="member_role" label="角色">
-                <Selector options={memberUiRoleOptions} columns={2} showCheckMark={false} />
-              </Form.Item>
-              <Form.Item name="member_share_ratio" label="积分占比">
-                <Input placeholder="例如：0.2" clearable type="number" />
-              </Form.Item>
               <Form.Item name="member_tags" label="标签">
-                <Input placeholder="例如：算法, 数据标注, 前端；仅前端展示" clearable />
+                <Input placeholder="例如：算法, 前端, 数据标注；默认标签为参与者" clearable />
               </Form.Item>
               <Button onClick={() => appendMemberDraft(form.getFieldsValue(true))}>加入成员列表</Button>
 
@@ -521,8 +553,7 @@ const ProjectFormPage = () => {
                             {index + 1}. {memberDirectory[member.member_open_id] || ""}
                           </div>
                           <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                            <span style={chipStyle("#eef2ff", "#4338ca")}>{memberUiRoleLabel[member.ui_role]}</span>
-                            <span style={chipStyle("#f3f4f6", "#4b5563", 500)}>占比 {member.share_ratio}</span>
+                            <span style={chipStyle("#eef2ff", "#4338ca")}>参与者</span>
                             {member.tags ? <span style={chipStyle("#ecfeff", "#0f766e", 500)}>{member.tags}</span> : null}
                           </div>
                         </div>
@@ -549,25 +580,7 @@ const ProjectFormPage = () => {
                         </div>
                       </div>
 
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
-                        <div>
-                          <div style={{ marginBottom: 6, color: colors.muted, fontSize: 12 }}>角色</div>
-                          <Selector
-                            options={memberUiRoleOptions}
-                            value={[member.ui_role]}
-                            columns={1}
-                            showCheckMark={false}
-                            onChange={(next) => updateMemberDraft(member.temp_id, { ui_role: (next[0] || "member") as MemberUiRole })}
-                          />
-                        </div>
-                        <div>
-                          <div style={{ marginBottom: 6, color: colors.muted, fontSize: 12 }}>占比</div>
-                          <Input
-                            value={String(member.share_ratio)}
-                            type="number"
-                            onChange={(value) => updateMemberDraft(member.temp_id, { share_ratio: Number(value || 0) || 0 })}
-                          />
-                        </div>
+                      <div>
                         <div>
                           <div style={{ marginBottom: 6, color: colors.muted, fontSize: 12 }}>标签</div>
                           <Input value={member.tags} placeholder="自由标签" onChange={(value) => updateMemberDraft(member.temp_id, { tags: value })} />
@@ -579,6 +592,16 @@ const ProjectFormPage = () => {
               </div>
             </div>
           </div>
+          ) : (
+            <div style={sectionCardStyle}>
+              <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: colors.title }}>个人项目</div>
+                <div style={{ color: colors.muted, fontSize: 12, lineHeight: 1.6 }}>
+                  个人项目会把创建者作为主要推进人；不是自己直接参与的项目请使用团队项目。
+                </div>
+              </div>
+            </div>
+          )}
 
           {!isEdit ? (
             <div style={sectionCardStyle}>
@@ -649,7 +672,7 @@ const ProjectFormPage = () => {
                             <div>
                               <div style={{ marginBottom: 6, color: colors.muted, fontSize: 12 }}>截止日期</div>
                               <DatePicker
-                                precision="day"
+                                precision="minute"
                                 value={task.due_date ?? undefined}
                                 onConfirm={(value) => updateTaskDraft(task.temp_id, { due_date: value })}
                               >
@@ -665,7 +688,7 @@ const ProjectFormPage = () => {
                                       border: `1px solid ${colors.border}`,
                                     }}
                                   >
-                                    {formatDate(value)}
+                                    {formatDateTime(value)}
                                   </div>
                                 )}
                               </DatePicker>

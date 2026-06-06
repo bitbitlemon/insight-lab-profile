@@ -14,8 +14,12 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import require_admin
 from app.models import Member, PointsLedger
-from app.services.points_service import write_industrial_ledger
-from app.services.points_rules import DevRole, amount_curve_points
+from app.services.points_service import (
+    industrial_incremental_points,
+    industrial_project_cumulative_amount,
+    write_industrial_ledger,
+)
+from app.services.points_rules import DevRole
 
 router = APIRouter(prefix="/api/industrial", tags=["industrial"])
 
@@ -30,6 +34,7 @@ class IndustrialSubmit(BaseModel):
     amount_yuan: float = Field(..., gt=0, le=1e10)
     scene: Literal["contract", "monthly_revenue", "horizontal", "startup"]
     occurred_on: date
+    project_key: str | None = Field(None, max_length=80, description="同一合同/项目的稳定标识, 用于累计金额防拆单")
     note: str | None = Field(None, max_length=200)
 
 
@@ -45,9 +50,16 @@ class IndustrialSubmitOut(BaseModel):
 
 
 @router.get("/preview")
-def preview(amount_yuan: float, _: Member = Depends(require_admin)):
-    """产业积分预估: 金额走 v4 对数压缩曲线 (锚点 3 万 = 100 分)。"""
-    return {"points": amount_curve_points(amount_yuan)}
+def preview(
+    amount_yuan: float,
+    project_key: str | None = None,
+    db: Session = Depends(get_db),
+    _: Member = Depends(require_admin),
+):
+    """产业积分预估: 金额走 v4 对数压缩曲线; 有 project_key 时只预估累计增量。"""
+    previous = industrial_project_cumulative_amount(db, project_key)
+    points = industrial_incremental_points(previous, amount_yuan, project_key=project_key)
+    return {"points": points, "previous_amount_yuan": previous}
 
 
 @router.post("", response_model=IndustrialSubmitOut, status_code=201)
@@ -71,6 +83,7 @@ def submit_industrial(
             amount_yuan=payload.amount_yuan,
             scene=payload.scene,
             occurred_on=payload.occurred_on,
+            project_key=(payload.project_key or "").strip() or None,
             note=payload.note,
             submitted_by=user.open_id,
         )

@@ -1,7 +1,29 @@
 declare global {
+  type LarkRecorderManager = {
+    start: (options?: Record<string, unknown>) => void;
+    stop: () => void;
+    onStart?: (callback: () => void) => void;
+    onStop?: (callback: (res: { tempFilePath?: string }) => void) => void;
+    onError?: (callback: (err: unknown) => void) => void;
+  };
+
   interface Window {
     tt?: {
       ready?: (callback: () => void) => void;
+      getRecorderManager?: () => LarkRecorderManager;
+      getFileSystemManager?: () => {
+        readFile: (options: {
+          filePath: string;
+          encoding?: "base64";
+          success: (res: { data: string }) => void;
+          fail: (err: unknown) => void;
+        }) => void;
+      };
+      authorize?: (options: {
+        scope: string;
+        success: (res: unknown) => void;
+        fail: (err: unknown) => void;
+      }) => void;
       requestAccess?: (options: {
         appID: string;
         scopeList: string[];

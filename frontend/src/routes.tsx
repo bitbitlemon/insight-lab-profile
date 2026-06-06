@@ -16,6 +16,8 @@ const ContributionDetailPage = lazy(() => import("./pages/ContributionDetailPage
 const AwardDetailPage = lazy(() => import("./pages/AwardDetailPage"));
 const TrainingDetailPage = lazy(() => import("./pages/TrainingDetailPage"));
 const BoardPage = lazy(() => import("./pages/BoardPage"));
+const PersonnelPage = lazy(() => import("./pages/PersonnelPage"));
+const CloudLabPage = lazy(() => import("./pages/CloudLabPage"));
 const MemberDetailPage = lazy(() => import("./pages/MemberDetailPage"));
 const LeaderboardPage = lazy(() => import("./pages/LeaderboardPage"));
 const ProjectListPage = lazy(() => import("./pages/ProjectListPage"));
@@ -28,6 +30,8 @@ const MeetingNotesPage = lazy(() => import("./pages/MeetingNotesPage"));
 const AdminConsolePage = lazy(() => import("./pages/AdminConsolePage"));
 const MomentsPage = lazy(() => import("./pages/MomentsPage"));
 const FileConfirmPage = lazy(() => import("./pages/FileConfirmPage"));
+const NotificationReceiptPage = lazy(() => import("./pages/NotificationReceiptPage"));
+const ChatInsightsPage = lazy(() => import("./pages/ChatInsightsPage"));
 
 export const routes: RouteObject[] = [
   { path: "/", element: <ProfilePage /> },
@@ -56,10 +60,16 @@ export const routes: RouteObject[] = [
   { path: "/projects/:project_id", element: <ProjectDetailPage /> },
   { path: "/projects/:project_id/edit", element: <ProjectFormPage /> },
   { path: "/tasks/new", element: <TaskFormPage /> },
+  { path: "/tasks/:task_id/edit", element: <TaskFormPage /> },
   { path: "/board", element: <BoardPage /> },
+  { path: "/personnel", element: <PersonnelPage /> },
+  { path: "/cloud-lab", element: <CloudLabPage /> },
   { path: "/board/leaderboard", element: <LeaderboardPage /> },
   { path: "/admin", element: <AdminConsolePage /> },
   { path: "/members/:open_id", element: <MemberDetailPage /> },
   { path: "/files/confirm", element: <FileConfirmPage /> },
+  { path: "/notifications/receipt", element: <NotificationReceiptPage /> },
   { path: "/login", element: <LoginPage /> },
+  { path: "/chat-insights", element: <ChatInsightsPage /> },
+
 ];

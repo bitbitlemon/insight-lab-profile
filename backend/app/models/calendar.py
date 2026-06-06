@@ -76,6 +76,29 @@ class ClassSchedule(Base):
     )
 
 
+class LarkUserStatus(Base):
+    """飞书个人状态缓存: 长连接事件写入, 云实验室读取."""
+
+    __tablename__ = "lark_user_statuses"
+    __table_args__ = (
+        Index("idx_lark_user_status_active", "is_active", "end_at"),
+        Index("idx_lark_user_status_updated", "updated_at"),
+    )
+
+    member_open_id: Mapped[str] = mapped_column(ForeignKey("members.open_id"), primary_key=True)
+    status_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    emoji_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    emoji_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    presence_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class LeaveRequest(Base):
     """请假申请: 通过审批后会创建飞书 OOO 日程并写本地 CalendarEvent."""
 

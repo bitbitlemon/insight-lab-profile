@@ -79,7 +79,7 @@ const extractMessage = (err: unknown): string => {
 };
 
 const canAccessAdmin = (member?: Member | null) =>
-  Boolean(member && (member.role === "admin" || member.role === "staff" || /团长|政委|部长/.test(member.title || "")));
+  Boolean(member && (member.role === "admin" || member.role === "staff"));
 
 const fetchAllMembers = async (): Promise<Member[]> => {
   const first = await listMembers({ page: 1, page_size: 100 });
@@ -272,6 +272,7 @@ interface PointEntryFormValues {
   reason?: string;
   amount_yuan?: string;
   scene?: IndustrialScene[];
+  project_key?: string;
   note?: string;
   stage?: ProductStage[];
   product_name?: string;
@@ -453,7 +454,8 @@ const PointsEntryTab = ({ onSubmitted }: { onSubmitted: () => Promise<void> }) =
               setPreview(0);
               return;
             }
-            const data = await previewIndustrialPoints({ amount_yuan: amount });
+            const project_key = String(values.project_key || "").trim() || undefined;
+            const data = await previewIndustrialPoints({ amount_yuan: amount, project_key });
             setPreview(data.points);
             return;
           }
@@ -525,6 +527,7 @@ const PointsEntryTab = ({ onSubmitted }: { onSubmitted: () => Promise<void> }) =
           occurred_on,
           amount_yuan: requiredNumber(values.amount_yuan),
           scene: firstValue(values.scene, "contract"),
+          project_key: String(values.project_key || "").trim() || undefined,
           note: String(values.note || "").trim() || undefined,
         });
       } else {
@@ -623,7 +626,10 @@ const PointsEntryTab = ({ onSubmitted }: { onSubmitted: () => Promise<void> }) =
               <Selector options={industrialSceneOptions} columns={2} showCheckMark={false} />
             </Form.Item>
             <Form.Item name="amount_yuan" label="金额（元）" rules={[{ required: true, message: "请填写金额" }]}>
-              <Input placeholder="按金额曲线折算积分" type="number" clearable />
+              <Input placeholder="本次新增金额，按累计曲线折算积分" type="number" clearable />
+            </Form.Item>
+            <Form.Item name="project_key" label="项目标识">
+              <Input placeholder="可选；同一合同/项目每次填同一个标识，自动防拆单" clearable />
             </Form.Item>
             <Form.Item name="note" label="备注">
               <Input placeholder="可选，补充合同或收入说明" clearable />
@@ -1529,7 +1535,7 @@ const AdminConsolePage = () => {
 
   if (authLoading) return <SectionLoading text="正在加载权限..." />;
   if (!me) return <SectionError title="无法访问" description="当前未登录，请先完成登录" />;
-  if (!canAccessAdmin(me)) return <PageShell><SectionError title="无权访问" description="仅管理员、职员或团长/政委/部长可进入" /></PageShell>;
+  if (!canAccessAdmin(me)) return <PageShell><SectionError title="无权访问" description="仅管理员或职员可进入审批中台" /></PageShell>;
 
   return (
     <PageShell>

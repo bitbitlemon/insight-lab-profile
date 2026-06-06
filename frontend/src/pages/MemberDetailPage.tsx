@@ -6,7 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { listCompetitions, type Competition } from "../api/competitions";
 import { listContributions, type Contribution, type ContributionType } from "../api/contributions";
 import { listMeetingNotes } from "../api/meeting_notes";
-import { getMember } from "../api/members";
+import { getMember, getMemberWorkload } from "../api/members";
 import { listPapers } from "../api/papers";
 import { getMemberPoints, getMemberPointsLedger, type LedgerEntry, type MemberPoints } from "../api/points";
 import PointsSummaryBadge, { pointsFormulaText } from "../components/PointsSummaryBadge";
@@ -15,7 +15,7 @@ import { TitleChip } from "../components/TitleChip";
 import VenueBadge from "../components/VenueBadge";
 import { Avatar, PageShell, SectionEmpty, SectionError, SectionLoading, chipStyle, colors, fmtPoints, lineClamp, sectionCardStyle } from "../components/ui";
 import { useAuth } from "../hooks/useAuth";
-import type { MeetingNote, Member, Paper } from "../types/api";
+import type { MeetingNote, Member, MemberWorkload, Paper } from "../types/api";
 
 type TabKey = "papers" | "competitions" | "contributions" | "notes" | "points";
 
@@ -87,6 +87,19 @@ const itemCardStyle: CSSProperties = {
   boxShadow: "0 10px 24px rgba(15,23,42,0.05)",
 };
 
+const taskProjectBadgeStyle = (linked: boolean): CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "3px 8px",
+  borderRadius: 8,
+  background: linked ? "#e0f2fe" : "#f1f5f9",
+  color: linked ? "#075985" : "#475569",
+  border: linked ? "1px solid #bae6fd" : "1px solid #cbd5e1",
+  fontSize: 12,
+  fontWeight: 800,
+  lineHeight: 1.2,
+});
+
 const pointsChipStyles = {
   paper: { label: "论文", bg: "#f3e8ff", fg: "#7e22ce" },
   competition: { label: "比赛", bg: "#ffedd5", fg: "#c2410c" },
@@ -96,6 +109,19 @@ const pointsChipStyles = {
 } as const;
 
 const formatPointsDate = (value: string) => value.slice(0, 10);
+
+const formatTaskDate = (value?: string | null) => {
+  if (!value) return "未设置";
+  return value.replace("T", " ").slice(0, 16);
+};
+
+const taskStatusLabel: Record<string, string> = {
+  todo: "待办",
+  in_progress: "进行中",
+  blocked: "受阻",
+  done: "完成",
+  cancelled: "取消",
+};
 
 const MemberDetailPage = () => {
   const { open_id } = useParams();
@@ -118,6 +144,8 @@ const MemberDetailPage = () => {
   const [pointsLoading, setPointsLoading] = useState(false);
   const [ledger, setLedger] = useState<LedgerEntry[] | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [workload, setWorkload] = useState<MemberWorkload | null>(null);
+  const [workloadLoading, setWorkloadLoading] = useState(false);
 
   useEffect(() => {
     if (!open_id) {
@@ -199,6 +227,18 @@ const MemberDetailPage = () => {
     return () => {
       active = false;
     };
+  }, [notFound, open_id]);
+
+  useEffect(() => {
+    if (!open_id || notFound) {
+      return;
+    }
+
+    setWorkloadLoading(true);
+    getMemberWorkload(open_id)
+      .then(setWorkload)
+      .catch(() => setWorkload(null))
+      .finally(() => setWorkloadLoading(false));
   }, [notFound, open_id]);
 
   useEffect(() => {
@@ -317,6 +357,70 @@ const MemberDetailPage = () => {
                   </Tag>
                 ))}
               </div>
+            ) : null}
+          </div>
+        </Card>
+
+        <Card style={sectionCardStyle}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: colors.title }}>任务负载</div>
+                <div style={{ marginTop: 3, color: colors.muted, fontSize: 12 }}>
+                  {workload?.detail_visible ? "可查看任务详情" : "不同部门仅显示数量概览"}
+                </div>
+              </div>
+              <Button size="mini" fill="outline" color="primary" onClick={() => navigate("/cloud-lab")}>
+                云实验室
+              </Button>
+            </div>
+            {workloadLoading ? <SectionLoading text="正在加载任务负载..." /> : null}
+            {!workloadLoading && workload ? (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8 }}>
+                  {[
+                    ["待推进", workload.summary.open_tasks],
+                    ["进行中", workload.summary.in_progress_tasks],
+                    ["受阻", workload.summary.blocked_tasks],
+                    ["逾期", workload.summary.overdue_tasks],
+                  ].map(([label, value]) => (
+                    <div key={label} style={{ borderRadius: 10, background: "#f8fafc", border: "1px solid rgba(226,232,240,0.9)", padding: "10px 8px", textAlign: "center" }}>
+                      <div style={{ color: colors.muted, fontSize: 11 }}>{label}</div>
+                      <div style={{ marginTop: 4, color: colors.title, fontSize: 18, fontWeight: 800 }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1, height: 8, borderRadius: 999, background: "#e5e7eb", overflow: "hidden" }}>
+                    <div style={{ width: `${workload.summary.capacity_score}%`, height: "100%", background: workload.summary.capacity_score > 70 ? colors.danger : workload.summary.capacity_score > 35 ? colors.warning : colors.success }} />
+                  </div>
+                  <div style={{ color: colors.title, fontSize: 13, fontWeight: 800 }}>{workload.summary.capacity_label}</div>
+                </div>
+                {workload.detail_visible ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {workload.tasks.slice(0, 8).map((task) => (
+                      <button
+                        key={task.task_id}
+                        type="button"
+                        onClick={() => navigate(task.project_id ? `/projects/${task.project_id}` : "/projects")}
+                        style={{ ...itemCardStyle, width: "100%", textAlign: "left", padding: 12, cursor: "pointer" }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <div style={{ color: colors.title, fontSize: 14, fontWeight: 800 }}>{task.title}</div>
+                          <div style={{ color: task.status === "blocked" ? colors.danger : colors.primaryDeep, fontSize: 12 }}>{taskStatusLabel[task.status]}</div>
+                        </div>
+                        <div style={{ marginTop: 7, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+                          <span style={taskProjectBadgeStyle(Boolean(task.project_id))}>
+                            项目: {task.project_name || "独立任务"}
+                          </span>
+                          <span style={{ color: colors.muted, fontSize: 12 }}>截止 {formatTaskDate(task.due_date)}</span>
+                        </div>
+                      </button>
+                    ))}
+                    {workload.tasks.length === 0 ? <SectionEmpty description="当前没有待推进任务" /> : null}
+                  </div>
+                ) : null}
+              </>
             ) : null}
           </div>
         </Card>

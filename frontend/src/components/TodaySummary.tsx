@@ -78,6 +78,20 @@ const todaySummaryStyles = `
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
   }
+
+  .today-task-grid {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(104px, 0.38fr);
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  @media (max-width: 420px) {
+    .today-task-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
 `;
 
 const itemTitleStyle: CSSProperties = {
@@ -93,6 +107,21 @@ const metaStyle: CSSProperties = {
   fontSize: 12,
   lineHeight: 1.45,
 };
+
+const taskProjectBadgeStyle = (linked: boolean): CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  alignSelf: "flex-start",
+  marginTop: 3,
+  padding: "2px 7px",
+  borderRadius: 8,
+  background: linked ? "#e0f2fe" : "#f1f5f9",
+  color: linked ? "#075985" : "#475569",
+  border: linked ? "1px solid #bae6fd" : "1px solid #cbd5e1",
+  fontSize: 11,
+  fontWeight: 800,
+  lineHeight: 1.2,
+});
 
 const actionButtonStyle: CSSProperties = {
   border: "none",
@@ -138,13 +167,28 @@ const formatTime = (value: string) =>
 const formatEventTime = (event: CalendarEvent) =>
   event.all_day ? "全天" : `${formatTime(event.start_at)} - ${formatTime(event.end_at)}`;
 
-const formatDateLabel = (value: string) => value.slice(0, 10);
+const formatDateTimeLabel = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value.slice(0, 16).replace("T", " ");
+  }
+  const pad = (input: number) => String(input).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
 
 const priorityStyle: Record<ProjectPriority, { bg: string; fg: string; label: string }> = {
   urgent: { bg: "#fee2e2", fg: "#991b1b", label: "紧急" },
   high: { bg: "#ffedd5", fg: "#c2410c", label: "高" },
   medium: { bg: "#dbeafe", fg: "#1d4ed8", label: "中" },
   low: { bg: "#f3f4f6", fg: "#4b5563", label: "低" },
+};
+
+const projectStatusLabel: Record<Project["status"], string> = {
+  planning: "规划中",
+  active: "进行中",
+  paused: "暂停",
+  completed: "完成",
+  archived: "归档",
 };
 
 const sectionBlockStyle: CSSProperties = {
@@ -261,6 +305,7 @@ const TodaySummary = ({ member }: { member: Member }) => {
   const navigate = useNavigate();
   const [events, setEvents] = useState<LoadState<CalendarEvent>>(initialState);
   const [tasks, setTasks] = useState<LoadState<Task>>(initialState);
+  const [projects, setProjects] = useState<LoadState<Project>>(initialState);
   const [deadlines, setDeadlines] = useState<LoadState<DeadlineItem>>(initialState);
   const canAdmin = canAccessAdmin(member.role, member.title);
 
@@ -272,6 +317,7 @@ const TodaySummary = ({ member }: { member: Member }) => {
 
     setEvents(initialState);
     setTasks(initialState);
+    setProjects(initialState);
     setDeadlines(initialState);
 
     const loadEvents = listCalendarEvents({
@@ -302,12 +348,17 @@ const TodaySummary = ({ member }: { member: Member }) => {
         if (active) setTasks({ loading: false, items: [], error: true });
       });
 
-    const loadDeadlines = Promise.all([
+    const loadProjectData = Promise.all([
       listProjects({ page: 1, page_size: 50 }),
       listCompetitions({ page: 1, page_size: 50 }),
     ])
       .then(([projectResponse, competitionResponse]) => {
         if (!active) return;
+        setProjects({
+          loading: false,
+          items: projectResponse.items,
+          error: false,
+        });
         setDeadlines({
           loading: false,
           items: buildDeadlines(projectResponse.items, competitionResponse.items),
@@ -315,27 +366,37 @@ const TodaySummary = ({ member }: { member: Member }) => {
         });
       })
       .catch(() => {
-        if (active) setDeadlines({ loading: false, items: [], error: true });
+        if (active) {
+          setProjects({ loading: false, items: [], error: true });
+          setDeadlines({ loading: false, items: [], error: true });
+        }
       });
 
-    void Promise.allSettled([loadEvents, loadTasks, loadDeadlines]);
+    void Promise.allSettled([loadEvents, loadTasks, loadProjectData]);
 
     return () => {
       active = false;
     };
   }, [member.open_id]);
 
-  const taskToday = useMemo(() => dateOnly(new Date()), []);
-  const allLoaded = !events.loading && !tasks.loading && !deadlines.loading;
+  const now = useMemo(() => new Date(), []);
+  const allLoaded = !events.loading && !tasks.loading && !projects.loading && !deadlines.loading;
   const allEmpty =
     allLoaded &&
     !events.error &&
     !tasks.error &&
+    !projects.error &&
     !deadlines.error &&
     events.items.length === 0 &&
     tasks.items.length === 0 &&
+    projects.items.length === 0 &&
     deadlines.items.length === 0 &&
     !canAdmin;
+
+  const visibleProjects = useMemo(
+    () => projects.items.filter((project) => project.status !== "archived").slice(0, 8),
+    [projects.items],
+  );
 
   if (allEmpty) {
     return (
@@ -356,26 +417,25 @@ const TodaySummary = ({ member }: { member: Member }) => {
     <Card style={sectionCardStyle}>
       <style>{todaySummaryStyles}</style>
       <div style={{ display: "flex", flexDirection: "column" }}>
-        <SummaryBlock title="今日日程" count={events.items.length} actionLabel="查看全部 →" onAction={() => navigate("/calendar")}>
-          <LoadingOrError loading={events.loading} error={events.error} loadingText="正在加载今日日程..." errorText="今日日程加载失败" />
-          {!events.loading && !events.error && events.items.length === 0 ? (
-            <div style={inlineEmptyStyle}>今天没有日程</div>
-          ) : null}
-          {!events.loading && !events.error && events.items.length > 0 ? (
-            <div style={listStyle}>
-              {events.items.slice(0, 3).map((event) => (
-                <button key={event.event_id} type="button" className="today-summary-row" onClick={() => navigate("/calendar")}>
-                  <span style={{ ...chipStyle("#f3f4f6", "#4b5563", 650), flexShrink: 0 }}>{formatEventTime(event)}</span>
-                  <span style={{ minWidth: 0, flex: 1 }}>
-                    <span style={itemTitleStyle}>{event.title}</span>
-                    {event.location ? <span style={metaStyle}>{event.location}</span> : null}
-                  </span>
-                </button>
-              ))}
-              <MoreHint hiddenCount={Math.max(events.items.length - 3, 0)} />
-            </div>
-          ) : null}
-        </SummaryBlock>
+        {events.loading || events.error || events.items.length > 0 ? (
+          <SummaryBlock title="今日日程" count={events.items.length} actionLabel="查看全部 →" onAction={() => navigate("/calendar")}>
+            <LoadingOrError loading={events.loading} error={events.error} loadingText="正在加载今日日程..." errorText="今日日程加载失败" />
+            {!events.loading && !events.error && events.items.length > 0 ? (
+              <div style={listStyle}>
+                {events.items.slice(0, 3).map((event) => (
+                  <button key={event.event_id} type="button" className="today-summary-row" onClick={() => navigate("/calendar")}>
+                    <span style={{ ...chipStyle("#f3f4f6", "#4b5563", 650), flexShrink: 0 }}>{formatEventTime(event)}</span>
+                    <span style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+                      <span style={itemTitleStyle}>{event.title}</span>
+                      {event.location ? <span style={metaStyle}>{event.location}</span> : null}
+                    </span>
+                  </button>
+                ))}
+                <MoreHint hiddenCount={Math.max(events.items.length - 3, 0)} />
+              </div>
+            ) : null}
+          </SummaryBlock>
+        ) : null}
 
         <SummaryBlock title="我的任务" count={tasks.items.length} actionLabel="查看全部 →" onAction={() => navigate("/projects?tab=tasks")}>
           <LoadingOrError loading={tasks.loading} error={tasks.error} loadingText="正在加载我的任务..." errorText="我的任务加载失败" />
@@ -386,9 +446,10 @@ const TodaySummary = ({ member }: { member: Member }) => {
             <div style={listStyle}>
               {tasks.items.slice(0, 3).map((task) => {
                 const tone = priorityStyle[task.priority] || priorityTone.medium;
-                const dueDate = task.due_date ? formatDateLabel(task.due_date) : "未设置截止";
-                const overdue = task.due_date ? task.due_date < taskToday : false;
-                const dueToday = task.due_date === taskToday;
+                const dueAt = task.due_date ? new Date(task.due_date) : null;
+                const dueDate = task.due_date ? formatDateTimeLabel(task.due_date) : "未设置截止";
+                const overdue = dueAt ? dueAt < now : false;
+                const dueToday = dueAt ? dateOnly(dueAt) === dateOnly(now) : false;
                 return (
                   <button
                     key={task.task_id}
@@ -399,17 +460,65 @@ const TodaySummary = ({ member }: { member: Member }) => {
                     }}
                     style={{ cursor: task.project_id ? "pointer" : "default" }}
                   >
-                    <span style={{ ...chipStyle(tone.bg, tone.fg, 700), flexShrink: 0 }}>{tone.label}</span>
-                    <span style={{ minWidth: 0, flex: 1 }}>
-                      <span style={itemTitleStyle}>{task.title}</span>
-                      <span style={{ ...metaStyle, color: overdue || dueToday ? colors.danger : colors.muted }}>
-                        {overdue ? "已逾期" : dueDate}
+                    <span className="today-task-grid">
+                      <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
+                        <span style={itemTitleStyle}>{task.title}</span>
+                        <span style={taskProjectBadgeStyle(Boolean(task.project_id))}>
+                          项目: {task.project_name || "独立任务"}
+                        </span>
+                      </span>
+                      <span
+                        style={{
+                          minWidth: 0,
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "flex-end",
+                          justifyContent: "space-between",
+                          gap: 7,
+                        }}
+                      >
+                        <span style={{ ...chipStyle(tone.bg, tone.fg, 700), flexShrink: 0 }}>{tone.label}</span>
+                        <span style={{ ...metaStyle, color: overdue || dueToday ? colors.danger : colors.muted, textAlign: "right" }}>
+                          {overdue ? "已逾期" : dueDate}
+                        </span>
                       </span>
                     </span>
                   </button>
                 );
               })}
               <MoreHint hiddenCount={Math.max(tasks.items.length - 3, 0)} />
+            </div>
+          ) : null}
+        </SummaryBlock>
+
+        <SummaryBlock title="当前项目" count={visibleProjects.length} actionLabel="查看全部 →" onAction={() => navigate("/projects")}>
+          <LoadingOrError loading={projects.loading} error={projects.error} loadingText="正在加载项目..." errorText="项目加载失败" />
+          {!projects.loading && !projects.error && visibleProjects.length === 0 ? (
+            <div style={inlineEmptyStyle}>暂无进行中的项目</div>
+          ) : null}
+          {!projects.loading && !projects.error && visibleProjects.length > 0 ? (
+            <div style={listStyle}>
+              {visibleProjects.map((project) => {
+                const tone = priorityStyle[project.priority] || priorityStyle.medium;
+                const done = project.task_done_count || 0;
+                const total = project.task_count || 0;
+                const progress = total > 0 ? `${done}/${total} 任务` : "暂无任务";
+                return (
+                  <button key={project.project_id} type="button" className="today-summary-row" onClick={() => navigate(`/projects/${project.project_id}`)}>
+                    <span style={{ ...chipStyle(tone.bg, tone.fg, 700), flexShrink: 0 }}>{tone.label}</span>
+                    <span style={{ minWidth: 0, flex: 1 }}>
+                      <span style={itemTitleStyle}>{project.name}</span>
+                      <span style={metaStyle}>
+                        {progress} · 截止 {project.target_end_date ? formatDateTimeLabel(project.target_end_date) : "未设置"}
+                      </span>
+                    </span>
+                    <span style={chipStyle(project.status === "active" ? "#dbeafe" : "#f3f4f6", project.status === "active" ? "#1d4ed8" : "#4b5563", 650)}>
+                      {projectStatusLabel[project.status]}
+                    </span>
+                  </button>
+                );
+              })}
+              <MoreHint hiddenCount={Math.max(projects.items.filter((project) => project.status !== "archived").length - visibleProjects.length, 0)} />
             </div>
           ) : null}
         </SummaryBlock>
@@ -442,7 +551,7 @@ const TodaySummary = ({ member }: { member: Member }) => {
                     <span style={{ minWidth: 0, flex: 1 }}>
                       <span style={itemTitleStyle}>{item.title}</span>
                       <span style={metaStyle}>
-                        {formatDateLabel(item.date)} · 还剩 {Math.max(leftDays, 0)} 天
+                        {formatDateTimeLabel(item.date)} · 还剩 {Math.max(leftDays, 0)} 天
                       </span>
                     </span>
                   </button>

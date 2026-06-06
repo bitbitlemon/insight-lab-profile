@@ -1,7 +1,7 @@
 """
 飞书事件 WebSocket 监听 (lark-cli event +subscribe subprocess + asyncio readline)
 
-监听: vc.meeting.meeting_ended_v1, calendar.calendar.event_changed_v4
+监听: vc.meeting.meeting_ended_v1, calendar.calendar.event_changed_v4, user_status_change
 触发: 妙记同步 + 日历事件双向同步
 """
 from __future__ import annotations
@@ -12,9 +12,11 @@ from typing import Any
 from ..db import SessionLocal
 from .minutes_sync import run_meeting_sync
 from .calendar_sync import handle_calendar_event_change
+from .focus_card_actions import handle_focus_card_action
+from .lark_user_status import handle_lark_user_status_change
 
 LARK_CLI = "/home/ubuntu/.npm-global/bin/lark-cli"
-EVENT_TYPES = "vc.meeting.meeting_ended_v1,calendar.calendar.event_changed_v4"
+EVENT_TYPES = "vc.meeting.meeting_ended_v1,calendar.calendar.event_changed_v4,card.action.trigger,user_status_change"
 
 log = logging.getLogger("listener")
 
@@ -55,6 +57,34 @@ async def _handle_calendar_changed(payload: dict) -> None:
         db.close()
 
 
+async def _handle_card_action(payload: dict) -> None:
+    log.info("handling card action: %s", str(payload)[:300])
+    db = SessionLocal()
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: handle_focus_card_action({"event": payload}, db)
+        )
+        log.info("card action result: %s", result)
+    except Exception as e:
+        log.exception("card action failed: %s", e)
+    finally:
+        db.close()
+
+
+async def _handle_user_status_change(payload: dict) -> None:
+    log.info("handling user status change: %s", str(payload)[:300])
+    db = SessionLocal()
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: handle_lark_user_status_change(db, payload)
+        )
+        log.info("user status synced open_id=%s", result)
+    except Exception as e:
+        log.exception("user status sync failed: %s", e)
+    finally:
+        db.close()
+
+
 async def _handle_event(event: dict) -> None:
     et = event.get("header", {}).get("event_type") or event.get("event_type")
     if not et:
@@ -64,6 +94,10 @@ async def _handle_event(event: dict) -> None:
         await _handle_meeting_ended(payload)
     elif et == "calendar.calendar.event_changed_v4":
         await _handle_calendar_changed(payload)
+    elif et == "card.action.trigger":
+        await _handle_card_action(payload)
+    elif et in ("user_status_change", "contact.user_status_change_v1", "contact.user_status.changed_v1"):
+        await _handle_user_status_change(payload)
     else:
         log.debug("ignored event_type=%s", et)
 

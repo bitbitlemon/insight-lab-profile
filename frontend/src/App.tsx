@@ -3,20 +3,25 @@ import { DotLoading } from "antd-mobile";
 import { useRoutes, useLocation } from "react-router-dom";
 import { routes } from "./routes";
 import NavBar from "./components/NavBar";
+import GlobalVoiceCommand from "./components/GlobalVoiceCommand";
+import GlobalFocusTimer from "./components/GlobalFocusTimer";
+import { UiGlobalStyle } from "./components/ui";
 
 const App = () => {
   const location = useLocation();
   const element = useRoutes(routes);
   const hideNav = location.pathname === "/login";
+  const hideFloatingTools = hideNav || location.pathname.startsWith("/cloud-lab");
 
   return (
     <div
       style={{
         minHeight: "100vh",
         backgroundColor: "#f5f7fa",
-        paddingBottom: hideNav ? 0 : 64,
+        paddingBottom: hideFloatingTools ? 0 : 64,
       }}
     >
+      <UiGlobalStyle />
       <Suspense
         fallback={
           <div
@@ -33,7 +38,9 @@ const App = () => {
       >
         {element}
       </Suspense>
-      {!hideNav && <NavBar />}
+      {!hideFloatingTools && <GlobalFocusTimer />}
+      {!hideFloatingTools && <GlobalVoiceCommand />}
+      {!hideFloatingTools && <NavBar />}
     </div>
   );
 };

@@ -276,18 +276,27 @@ def write_ip_ledger(
 def write_industrial_ledger(
     db: Session, *, source_id: int | None, members: Sequence[tuple[str, str | None]],
     amount_yuan: float, scene: str,
-    note: str | None = None,
+    project_key: str | None = None, note: str | None = None,
     occurred_on: date, submitted_by: str | None = None,
 ) -> int:
-    """产业积分: 金额走 v4 对数压缩曲线. scene 描述场景 (合同/月入/横向/创业)."""
+    """产业积分: 金额走 v4 对数压缩曲线. scene 描述场景 (合同/月入/横向/创业).
+
+    project_key 用于防拆单: 同一项目多次入账时, 本次只给
+    f(累计后金额) - f(累计前金额) 的增量积分。
+    """
     _delete_old_ledger(db, "industrial", source_id) if source_id else None
-    pool = industrial_points(amount_yuan)
+    previous_amount = industrial_project_cumulative_amount(db, project_key, exclude_source_id=source_id)
+    cumulative_amount = previous_amount + amount_yuan if project_key else amount_yuan
+    pool = industrial_incremental_points(previous_amount, amount_yuan, project_key=project_key)
     alloc = allocate_dev_points(pool, list(members))
     if pool <= 0 or not alloc:
         return 0
     role_by_member = {oid: role for oid, role in members}
     snap = {
         "amount_yuan": amount_yuan,
+        "project_key": project_key,
+        "cumulative_amount_before": previous_amount if project_key else 0.0,
+        "cumulative_amount_after": cumulative_amount,
         "scene": scene,
         "note": note,
         "members": [{"member_open_id": oid, "role": role} for oid, role in members],
@@ -299,13 +308,18 @@ def write_industrial_ledger(
         share_ratio = round(pts / pool, 6) if pool else 0.0
         role = role_by_member.get(oid) or "contributor"
         note_part = f"《{note[:30]}》" if note else ""
+        project_part = f" 项目 {project_key}" if project_key else ""
+        cumulative_part = (
+            f" 累计 ¥{previous_amount:.2f}→¥{cumulative_amount:.2f}"
+            if project_key else ""
+        )
         db.add(PointsLedger(
             member_open_id=oid, category=category_of("industrial"),
             source_type="industrial", source_id=source_id,
             occurred_at=occurred_on,
             base_points=pool, share_ratio=share_ratio, decay_factor=1.0,
             cap_adjustment_factor=1.0, final_points=pts,
-            reason=f"产业积分 {scene}{note_part} 角色 {role} 金额 ¥{amount_yuan:.2f}",
+            reason=f"产业积分 {scene}{project_part}{note_part} 角色 {role} 金额 ¥{amount_yuan:.2f}{cumulative_part}",
             status="approved", calculation_rule_version=RULES_VERSION,
             source_snapshot_json=json.dumps(snap, ensure_ascii=False),
             submitted_by=submitted_by, submitted_at=datetime.utcnow(),
@@ -314,6 +328,79 @@ def write_industrial_ledger(
         ))
         n += 1
     return n
+
+
+def _industrial_snapshot(row: PointsLedger) -> dict:
+    if not row.source_snapshot_json:
+        return {}
+    try:
+        snap = json.loads(row.source_snapshot_json)
+    except Exception:
+        return {}
+    return snap if isinstance(snap, dict) else {}
+
+
+def industrial_project_cumulative_amount(
+    db: Session,
+    project_key: str | None,
+    *,
+    exclude_source_id: int | None = None,
+) -> float:
+    """返回同一产业项目已累计入账金额.
+
+    历史数据没有 project_key 时不会参与累计; 同一 source_id 会写多名成员,
+    这里按 source_id 去重, 优先读取新版 cumulative_amount_after。
+    """
+    key = (project_key or "").strip()
+    if not key:
+        return 0.0
+    rows = (
+        db.query(PointsLedger)
+        .filter_by(source_type="industrial")
+        .filter(PointsLedger.status.in_(["approved", "settled"]))
+        .all()
+    )
+    by_source: dict[int, float] = {}
+    fallback_by_source: dict[int, float] = {}
+    for row in rows:
+        if exclude_source_id is not None and row.source_id == exclude_source_id:
+            continue
+        snap = _industrial_snapshot(row)
+        if (snap.get("project_key") or "").strip() != key:
+            continue
+        source = row.source_id or row.ledger_id
+        after = snap.get("cumulative_amount_after")
+        amount = snap.get("amount_yuan")
+        try:
+            if after is not None:
+                by_source[source] = max(by_source.get(source, 0.0), float(after))
+            elif amount is not None:
+                fallback_by_source[source] = max(fallback_by_source.get(source, 0.0), float(amount))
+        except (TypeError, ValueError):
+            continue
+    if by_source:
+        return max(by_source.values())
+    return sum(fallback_by_source.values())
+
+
+def industrial_incremental_points(
+    previous_amount_yuan: float,
+    amount_yuan: float,
+    *,
+    project_key: str | None = None,
+) -> float:
+    """产业金额增量积分.
+
+    无 project_key 时保持旧行为: 本条金额独立按曲线计分。
+    有 project_key 时按 f(累计前+本次)-f(累计前) 计分, 防止拆单套利。
+    """
+    if amount_yuan <= 0:
+        return 0.0
+    if not (project_key or "").strip():
+        return industrial_points(amount_yuan)
+    before = max(0.0, float(previous_amount_yuan or 0.0))
+    after = before + float(amount_yuan)
+    return round(max(0.0, industrial_points(after) - industrial_points(before)), 1)
 
 
 def write_penalty_ledger(

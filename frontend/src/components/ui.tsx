@@ -89,10 +89,15 @@ const globalCss = `
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    overflow-x: hidden;
   }
 
   * {
     box-sizing: border-box;
+  }
+
+  img, video, canvas, svg {
+    max-width: 100%;
   }
 
   a {
@@ -275,6 +280,116 @@ const globalCss = `
 
   ::-webkit-scrollbar-track {
     background: transparent;
+  }
+
+  @media (max-width: 767px) {
+    html, body, #root {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    .app-page-shell {
+      width: 100%;
+      padding: max(12px, env(safe-area-inset-top)) 12px calc(82px + env(safe-area-inset-bottom));
+    }
+
+    .adm-card,
+    .adm-list,
+    .adm-form,
+    .adm-tabs,
+    .adm-grid,
+    .adm-selector,
+    .adm-space,
+    .adm-result,
+    .adm-empty {
+      max-width: 100%;
+      min-width: 0;
+    }
+
+    .adm-card-body {
+      padding: 12px;
+    }
+
+    .adm-tabs-content {
+      overflow-x: hidden;
+    }
+
+    .adm-tabs-tab-list {
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .adm-tabs-tab-list::-webkit-scrollbar {
+      display: none;
+    }
+
+    .adm-selector {
+      display: flex;
+      flex-wrap: wrap;
+      overflow: visible;
+    }
+
+    .adm-selector-item {
+      min-width: 0;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      text-align: center;
+      line-height: 1.25;
+    }
+
+    .adm-button {
+      max-width: 100%;
+      min-width: 0;
+      white-space: normal;
+      line-height: 1.25;
+    }
+
+    .adm-popup-body {
+      max-width: 100vw;
+      overflow-x: hidden;
+    }
+
+    .adm-dialog-body {
+      max-width: calc(100vw - 28px);
+    }
+
+    .adm-dialog-content {
+      max-height: min(72vh, 560px);
+      overflow: auto;
+    }
+
+    .adm-input-element,
+    .adm-text-area-element {
+      font-size: 16px;
+    }
+
+    .app-section-title {
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .app-section-title__left {
+      width: 100%;
+    }
+
+    [style*="grid-template-columns"] {
+      min-width: 0;
+    }
+
+    [style*="repeat(4"],
+    [style*="repeat(5"],
+    [style*="repeat(6"] {
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+
+    [style*="minmax(220px"],
+    [style*="minmax(240px"],
+    [style*="minmax(260px"],
+    [style*="minmax(280px"] {
+      grid-template-columns: 1fr !important;
+    }
   }
 
   @media (min-width: 768px) {

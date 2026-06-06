@@ -17,6 +17,16 @@ export interface Contribution {
   score: number | null;
   proof_url: string | null;
   tags: string | null;
+  like_count: number;
+  comment_count: number;
+  created_at: string;
+}
+
+export interface ContributionComment {
+  comment_id: number;
+  contribution_id: number;
+  author_open_id: string;
+  content: string;
   created_at: string;
 }
 
@@ -36,7 +46,7 @@ export const getContribution = async (contribution_id: number | string): Promise
 };
 
 export const createContribution = async (
-  payload: Omit<Contribution, "contribution_id" | "created_at">,
+  payload: Omit<Contribution, "contribution_id" | "created_at" | "like_count" | "comment_count">,
 ): Promise<Contribution> => {
   const { data } = await api.post<Contribution>("/contributions", payload);
   return data;
@@ -47,5 +57,28 @@ export const updateContribution = async (
   payload: Partial<Omit<Contribution, "contribution_id" | "created_at" | "member_open_id">>,
 ): Promise<Contribution> => {
   const { data } = await api.patch<Contribution>(`/contributions/${contribution_id}`, payload);
+  return data;
+};
+
+export const recordContributionInteraction = async (
+  contribution_id: number | string,
+  kind: "like" | "comment" = "like",
+): Promise<Contribution> => {
+  const { data } = await api.post<Contribution>(`/contributions/${contribution_id}/interactions`, { kind });
+  return data;
+};
+
+export const listContributionComments = async (
+  contribution_id: number | string,
+): Promise<ContributionComment[]> => {
+  const { data } = await api.get<ContributionComment[]>(`/contributions/${contribution_id}/comments`);
+  return data;
+};
+
+export const createContributionComment = async (
+  contribution_id: number | string,
+  content: string,
+): Promise<ContributionComment> => {
+  const { data } = await api.post<ContributionComment>(`/contributions/${contribution_id}/comments`, { content });
   return data;
 };

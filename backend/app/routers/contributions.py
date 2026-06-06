@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import Contribution, Member, PointsLedger
+from app.models import Contribution, ContributionComment, Member, PointsLedger
 from app.schemas.common import PageResponse
 from app.services.points_rules import RULES_VERSION, contribution_base
 from app.services.points_service import try_write_contribution
@@ -39,6 +39,8 @@ class ContributionRead(BaseModel):
     score: int | None
     proof_url: str | None
     tags: str | None
+    like_count: int = 0
+    comment_count: int = 0
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -72,6 +74,24 @@ class ContributionUpdate(BaseModel):
 class TierPayload(BaseModel):
     tier: Literal["A", "B", "C"]
     comment: str | None = None
+
+
+class InteractionPayload(BaseModel):
+    kind: Literal["like", "comment"] = "like"
+
+
+class ContributionCommentRead(BaseModel):
+    comment_id: int
+    contribution_id: int
+    author_open_id: str
+    content: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ContributionCommentCreate(BaseModel):
+    content: str
 
 
 def _has_review_permission(current: Member) -> bool:
@@ -195,6 +215,65 @@ async def update_contribution(
         except Exception as e:
             log.warning("contributions Base 更新推送失败: %s", e)
     return ContributionRead.model_validate(c)
+
+
+@router.post("/{contribution_id}/interactions", response_model=ContributionRead)
+def record_contribution_interaction(
+    contribution_id: int,
+    payload: InteractionPayload,
+    db: Session = Depends(get_db),
+    _: Member = Depends(get_current_user),
+):
+    c = db.get(Contribution, contribution_id)
+    if not c:
+        raise HTTPException(404, "贡献记录不存在")
+    if payload.kind == "like":
+        c.like_count = (c.like_count or 0) + 1
+    else:
+        c.comment_count = (c.comment_count or 0) + 1
+    db.commit(); db.refresh(c)
+    return ContributionRead.model_validate(c)
+
+
+@router.get("/{contribution_id}/comments", response_model=list[ContributionCommentRead])
+def list_contribution_comments(
+    contribution_id: int,
+    db: Session = Depends(get_db),
+    _: Member = Depends(get_current_user),
+):
+    contribution = db.get(Contribution, contribution_id)
+    if not contribution:
+        raise HTTPException(404, "贡献记录不存在")
+    rows = db.execute(
+        select(ContributionComment)
+        .where(ContributionComment.contribution_id == contribution_id)
+        .order_by(ContributionComment.created_at.asc())
+    ).scalars().all()
+    return [ContributionCommentRead.model_validate(row) for row in rows]
+
+
+@router.post("/{contribution_id}/comments", response_model=ContributionCommentRead, status_code=201)
+def create_contribution_comment(
+    contribution_id: int,
+    payload: ContributionCommentCreate,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_user),
+):
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(400, "评论内容不能为空")
+    contribution = db.get(Contribution, contribution_id)
+    if not contribution:
+        raise HTTPException(404, "贡献记录不存在")
+    row = ContributionComment(
+        contribution_id=contribution_id,
+        author_open_id=current.open_id,
+        content=content,
+    )
+    contribution.comment_count = (contribution.comment_count or 0) + 1
+    db.add(row)
+    db.commit(); db.refresh(row)
+    return ContributionCommentRead.model_validate(row)
 
 
 @router.delete("/{contribution_id}", status_code=204)

@@ -1,11 +1,7 @@
-import type { CSSProperties } from "react";
-import { useRef, useState } from "react";
-import { Popup, TabBar } from "antd-mobile";
+import { useRef } from "react";
+import { TabBar } from "antd-mobile";
 import { useLocation, useNavigate } from "react-router-dom";
-import MeetingFormPopup from "./MeetingFormPopup";
-import MomentEditorPopup from "./MomentEditorPopup";
 import { colors, UiGlobalStyle } from "./ui";
-import type { MomentPost } from "../api/moments";
 
 const iconStyle = { width: 20, height: 20, display: "block" };
 
@@ -63,7 +59,7 @@ const ProjectIcon = ({ active }: { active: boolean }) => (
   </svg>
 );
 
-const CreateIcon = ({ active }: { active: boolean }) => (
+const BoardIcon = ({ active }: { active: boolean }) => (
   <svg
     viewBox="0 0 24 24"
     style={iconStyle}
@@ -71,37 +67,36 @@ const CreateIcon = ({ active }: { active: boolean }) => (
     stroke={active ? colors.primary : "#94a3b8"}
     strokeWidth="1.8"
   >
-    <circle cx="12" cy="12" r="8" />
-    <path d="M12 8v8M8 12h8" strokeLinecap="round" />
+    <rect x="4" y="5" width="16" height="14" rx="2.5" />
+    <path d="M9 5v14M15 5v14M4 10.5h16" strokeLinecap="round" />
+  </svg>
+);
+
+const LabIcon = ({ active }: { active: boolean }) => (
+  <svg
+    viewBox="0 0 24 24"
+    style={iconStyle}
+    fill="none"
+    stroke={active ? colors.primary : "#94a3b8"}
+    strokeWidth="1.8"
+  >
+    <path d="M4 19h16M6 19V8l6-3 6 3v11" strokeLinejoin="round" />
+    <path d="M9 19v-6h6v6M8.5 10h1.5M14 10h1.5" strokeLinecap="round" />
   </svg>
 );
 
 const tabItems = [
   { key: "/", title: "主页", renderIcon: HomeIcon },
-  { key: "/board", title: "看板", renderIcon: TeamIcon },
-  { key: "/calendar", title: "日历", renderIcon: CalendarIcon },
   { key: "/projects", title: "项目", renderIcon: ProjectIcon },
-  { key: "/create", title: "录入", renderIcon: CreateIcon },
+  { key: "/calendar", title: "日历", renderIcon: CalendarIcon },
+  { key: "/board", title: "看板", renderIcon: BoardIcon },
+  { key: "/cloud-lab", title: "实验室", renderIcon: LabIcon },
 ] as const;
-
-const createItems = [
-  { key: "/papers/new", label: "论文", icon: "📄", description: "录入论文成果" },
-  { key: "/competitions/new", label: "比赛", icon: "🏆", description: "录入比赛获奖" },
-  { key: "/contributions/new", label: "组织贡献", icon: "✨", description: "提交组织贡献" },
-  { key: "/tasks/new", label: "任务", icon: "✅", description: "新建任务" },
-  { key: "/calendar/meetings/new", label: "会议", icon: "🗓️", description: "安排会议" },
-  { key: "/moments/new", label: "动态", icon: "📝", description: "直接发布一条动态" },
-] as const;
-
-const createGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-  gap: 10,
-};
 
 const routePrefetchers: Record<string, (() => Promise<unknown>) | undefined> = {
   "/": () => import("../pages/ProfilePage"),
   "/board": () => import("../pages/BoardPage"),
+  "/cloud-lab": () => import("../pages/CloudLabPage"),
   "/calendar": () => import("../pages/CalendarPage"),
   "/projects": () => import("../pages/ProjectListPage"),
   "/moments": () => import("../pages/MomentsPage"),
@@ -113,25 +108,22 @@ const routePrefetchers: Record<string, (() => Promise<unknown>) | undefined> = {
 };
 
 const NavBar = () => {
-  const [popupVisible, setPopupVisible] = useState(false);
-  const [meetingPopupVisible, setMeetingPopupVisible] = useState(false);
-  const [momentPopupVisible, setMomentPopupVisible] = useState(false);
   const prefetchedPathsRef = useRef<Set<string>>(new Set());
   const location = useLocation();
   const navigate = useNavigate();
   const pathname = location.pathname;
   const activeKey = pathname === "/profile"
     ? "/"
-    : pathname.startsWith("/board") || pathname.startsWith("/members/") || pathname.startsWith("/gallery")
+    : pathname.startsWith("/cloud-lab")
+    ? "/cloud-lab"
+    : pathname.startsWith("/board")
     ? "/board"
+    : pathname.startsWith("/personnel") || pathname.startsWith("/members/") || pathname.startsWith("/gallery")
+    ? "/"
     : pathname.startsWith("/calendar")
       ? "/calendar"
-      : pathname.startsWith("/projects") || pathname.startsWith("/tasks")
-        ? "/projects"
-        : pathname.startsWith("/gallery")
-          ? "/gallery"
-        : pathname.startsWith("/papers") || pathname.startsWith("/competitions") || pathname.startsWith("/contributions")
-          ? "/create"
+        : pathname.startsWith("/projects") || pathname.startsWith("/tasks")
+          ? "/projects"
           : "/";
 
   const prefetchRoute = (path: string) => {
@@ -147,40 +139,7 @@ const NavBar = () => {
   };
 
   const handleTabChange = (value: string) => {
-    if (value === "/create") {
-      setPopupVisible(true);
-      return;
-    }
     navigate(value);
-  };
-
-  const goCreate = (path: string) => {
-    setPopupVisible(false);
-    if (path === "/calendar/meetings/new") {
-      setMeetingPopupVisible(true);
-      return;
-    }
-    if (path === "/moments/new") {
-      setMomentPopupVisible(true);
-      return;
-    }
-    navigate(path);
-  };
-
-  const handleMeetingCreated = () => {
-    setMeetingPopupVisible(false);
-    window.dispatchEvent(new CustomEvent("calendar:refresh"));
-    if (!pathname.startsWith("/calendar")) {
-      navigate("/calendar");
-    }
-  };
-
-  const handleMomentCreated = (post: MomentPost) => {
-    setMomentPopupVisible(false);
-    window.dispatchEvent(new CustomEvent("moments:refresh", { detail: post }));
-    if (!pathname.startsWith("/moments")) {
-      navigate("/moments");
-    }
   };
 
   return (
@@ -196,6 +155,7 @@ const NavBar = () => {
           borderTop: "1px solid rgba(229,231,235,0.92)",
           boxShadow: "0 -8px 24px rgba(15,23,42,0.06)",
           paddingBottom: "env(safe-area-inset-bottom)",
+          zIndex: 1300,
         }}
       >
         <UiGlobalStyle />
@@ -205,7 +165,7 @@ const NavBar = () => {
                 key={tab.key}
                 icon={(
                   <span onMouseEnter={() => prefetchRoute(tab.key)} onTouchStart={() => prefetchRoute(tab.key)}>
-                    <tab.renderIcon active={activeKey === tab.key || (tab.key === "/create" && popupVisible)} />
+                    <tab.renderIcon active={activeKey === tab.key} />
                   </span>
                 )}
                 title={(
@@ -217,82 +177,6 @@ const NavBar = () => {
             ))}
           </TabBar>
       </div>
-
-      <Popup
-        visible={popupVisible}
-        onMaskClick={() => setPopupVisible(false)}
-        bodyStyle={{
-          borderTopLeftRadius: 18,
-          borderTopRightRadius: 18,
-          background: "#f8fafc",
-          paddingBottom: "calc(16px + env(safe-area-inset-bottom))",
-        }}
-      >
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 17, fontWeight: 800, color: colors.title }}>选择录入入口</div>
-              <div style={{ marginTop: 4, color: colors.muted, fontSize: 12 }}>常用提交与日程入口统一收在这里</div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setPopupVisible(false)}
-              style={{
-                border: "none",
-                background: "transparent",
-                color: colors.placeholder,
-                fontSize: 20,
-                lineHeight: 1,
-                padding: 0,
-                cursor: "pointer",
-              }}
-            >
-              ×
-            </button>
-          </div>
-
-          <div style={createGridStyle}>
-            {createItems.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => goCreate(item.key)}
-                onMouseEnter={() => prefetchRoute(item.key)}
-                onTouchStart={() => prefetchRoute(item.key)}
-                style={{
-                  border: "1px solid rgba(229,231,235,0.92)",
-                  borderRadius: 16,
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98))",
-                  boxShadow: "0 10px 24px rgba(15,23,42,0.05)",
-                  padding: "14px 12px",
-                  textAlign: "left",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                  minHeight: 92,
-                  cursor: "pointer",
-                }}
-              >
-                <div style={{ fontSize: 22, lineHeight: 1 }}>{item.icon}</div>
-                <div style={{ fontSize: 14, fontWeight: 800, color: colors.title }}>{item.label}</div>
-                <div style={{ fontSize: 11, lineHeight: 1.5, color: colors.muted }}>{item.description}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-      </Popup>
-
-      <MeetingFormPopup
-        visible={meetingPopupVisible}
-        onClose={() => setMeetingPopupVisible(false)}
-        onSuccess={handleMeetingCreated}
-      />
-
-      <MomentEditorPopup
-        visible={momentPopupVisible}
-        onClose={() => setMomentPopupVisible(false)}
-        onSuccess={handleMomentCreated}
-      />
     </>
   );
 };
