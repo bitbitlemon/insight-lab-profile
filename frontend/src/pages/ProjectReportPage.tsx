@@ -4,7 +4,7 @@ import { Button, Card, Selector, Tabs } from "antd-mobile";
 import type { SelectorOption } from "antd-mobile/es/components/selector";
 import { useNavigate } from "react-router-dom";
 import { getProjectReportSummary, type ProjectReportSummary } from "../api/projectReport";
-import { PageShell, SectionEmpty, SectionError, SectionLoading, colors } from "../components/ui";
+import { SectionEmpty, SectionError, SectionLoading, colors } from "../components/ui";
 import { useAuth } from "../hooks/useAuth";
 
 const canAccess = (role?: string | null) => role === "admin" || role === "staff";
@@ -24,6 +24,13 @@ const metricStyle: CSSProperties = {
 };
 
 const reportStyles = `
+  .report-page {
+    width: 100%;
+    max-width: none;
+    min-height: 100vh;
+    padding: 16px 18px 88px;
+    background: #f4f7fb;
+  }
   .report-grid { display: grid; gap: 10px; }
   .report-two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .report-panel { border: 1px solid rgba(229,231,235,0.92); border-radius: 12px; background: #fff; padding: 14px; box-shadow: 0 8px 20px rgba(15,23,42,0.05); }
@@ -33,11 +40,12 @@ const reportStyles = `
   .report-bar-label { color: #374151; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .report-bar-track { height: 9px; border-radius: 999px; background: #eef2f7; overflow: hidden; }
   .report-bar-fill { height: 100%; border-radius: 999px; }
-  .report-table-wrap { overflow-x: auto; border: 1px solid rgba(229,231,235,0.92); border-radius: 12px; background: #fff; }
-  .report-table { width: 100%; border-collapse: collapse; min-width: 980px; }
+  .report-table-wrap { width: 100%; overflow-x: auto; border: 1px solid rgba(229,231,235,0.92); border-radius: 12px; background: #fff; }
+  .report-table { width: 100%; border-collapse: collapse; min-width: 1320px; table-layout: auto; }
   .report-table th { text-align: left; padding: 9px 8px; color: #6b7280; font-size: 12px; font-weight: 900; border-bottom: 1px solid #eef2f7; background: #f8fafc; white-space: nowrap; }
-  .report-table td { padding: 9px 8px; color: #1f2937; font-size: 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+  .report-table td { padding: 9px 8px; color: #1f2937; font-size: 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top; white-space: nowrap; }
   .report-table tr:last-child td { border-bottom: none; }
+  .report-table .report-wrap-cell { white-space: normal; min-width: 220px; }
   .report-num { font-weight: 900; color: #111827; }
   .report-muted { color: #6b7280; font-size: 12px; line-height: 1.45; }
   .report-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 7px; font-size: 11px; font-weight: 900; white-space: nowrap; }
@@ -47,7 +55,9 @@ const reportStyles = `
   .report-pill-blue { background: #dbeafe; color: #1d4ed8; }
   .report-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 12px 0 10px; flex-wrap: wrap; }
   @media (max-width: 900px) {
+    .report-page { padding: 12px 10px 84px; }
     .report-two { grid-template-columns: 1fr; }
+    .report-table { min-width: 1180px; }
     .report-bar-row { grid-template-columns: 76px 1fr 36px; }
   }
 `;
@@ -123,18 +133,21 @@ const ProjectReportPage = () => {
     messages: maxOf(filteredPeople.map((row) => row.chat_messages)),
   }), [filteredPeople]);
 
-  if (loading) return <PageShell><SectionLoading text="正在生成项目通报..." /></PageShell>;
+  if (loading) return <><style>{reportStyles}</style><div className="report-page"><SectionLoading text="正在生成项目通报..." /></div></>;
   if (error) {
     return (
-      <PageShell>
+      <>
+        <style>{reportStyles}</style>
+        <div className="report-page">
         <SectionError title={error} description="请确认当前账号是管理员或职员。" action={<Button size="small" onClick={() => load(days)}>重试</Button>} />
-      </PageShell>
+        </div>
+      </>
     );
   }
-  if (!summary) return <PageShell><SectionEmpty description="暂无项目通报数据" /></PageShell>;
+  if (!summary) return <><style>{reportStyles}</style><div className="report-page"><SectionEmpty description="暂无项目通报数据" /></div></>;
 
   return (
-    <PageShell>
+    <div className="report-page">
       <style>{reportStyles}</style>
       <div className="app-section-title" style={{ marginBottom: 12 }}>
         <div className="app-section-title__left">
@@ -299,7 +312,7 @@ const ProjectReportPage = () => {
                     <td>{row.chat_messages}</td>
                     <td>{row.meetings}</td>
                     <td>{row.meeting_hours}</td>
-                    <td>
+                    <td className="report-wrap-cell">
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                         {row.risk_flags.length ? row.risk_flags.map((flag) => (
                           <span key={flag} className="report-pill report-pill-red">{flag}</span>
@@ -333,7 +346,7 @@ const ProjectReportPage = () => {
                 <tbody>
                   {summary.risk_projects.map((project) => (
                     <tr key={project.project_id}>
-                      <td><strong>{project.name}</strong></td>
+                      <td className="report-wrap-cell"><strong>{project.name}</strong></td>
                       <td>{project.department}</td>
                       <td>{project.owner_name}</td>
                       <td>{project.status}</td>
@@ -342,7 +355,7 @@ const ProjectReportPage = () => {
                       <td><span className={project.blocked_tasks ? "report-pill report-pill-red" : "report-pill report-pill-green"}>{project.blocked_tasks}</span></td>
                       <td>{fmtTime(project.last_chat_at)}</td>
                       <td>{fmtTime(project.target_end_date)}</td>
-                      <td>
+                      <td className="report-wrap-cell">
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                           {project.reasons.map((reason) => <span key={reason} className="report-pill report-pill-amber">{reason}</span>)}
                         </div>
@@ -372,8 +385,8 @@ const ProjectReportPage = () => {
                 <tbody>
                   {summary.overdue_tasks.map((task) => (
                     <tr key={task.task_id}>
-                      <td><strong>{task.title}</strong></td>
-                      <td>{task.project_name || "独立任务"}</td>
+                      <td className="report-wrap-cell"><strong>{task.title}</strong></td>
+                      <td className="report-wrap-cell">{task.project_name || "独立任务"}</td>
                       <td>{task.assignee_name || "未指派"}</td>
                       <td>{task.department}</td>
                       <td>{task.status}</td>
@@ -387,7 +400,7 @@ const ProjectReportPage = () => {
           ) : <SectionEmpty description="当前没有逾期任务" />}
         </Tabs.Tab>
       </Tabs>
-    </PageShell>
+    </div>
   );
 };
 
