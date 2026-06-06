@@ -28,6 +28,18 @@ LARK_CLI_CANDIDATES = (
 MESSAGE_BACKEND_BASE_TOKEN = "L7hwbIV3gaFoB7sJYDtcxM5Tnmg"
 MESSAGE_BACKEND_TABLE_ID = "tbli5tObEB0twhvg"
 MESSAGE_BACKEND_VIEW_ID = "vewZ62k7Yr"
+MESSAGE_BACKEND_TABLES = (
+    {
+        "table_id": "tbli5tObEB0twhvg",
+        "table_name": "群聊消息汇总后台",
+        "view_id": "vewZ62k7Yr",
+    },
+    {
+        "table_id": "tblKCwi2p9dXfUh5",
+        "table_name": "群聊消息汇总后台(20260605)",
+        "view_id": None,
+    },
+)
 
 
 def _lark_cli() -> str:
@@ -184,7 +196,13 @@ def _chat_name(row: dict[str, Any], chat_id: str) -> str:
     return str(row.get("name") or row.get("chat_name") or row.get("chatName") or row.get("title") or chat_id).strip()
 
 
-def fetch_message_backend_records(*, limit: int = 120, offset: int = 0) -> dict[str, Any]:
+def fetch_message_backend_records(
+    *,
+    limit: int = 120,
+    offset: int = 0,
+    table_id: str = MESSAGE_BACKEND_TABLE_ID,
+    view_id: str | None = MESSAGE_BACKEND_VIEW_ID,
+) -> dict[str, Any]:
     args = [
         _lark_cli(),
         "base",
@@ -192,9 +210,7 @@ def fetch_message_backend_records(*, limit: int = 120, offset: int = 0) -> dict[
         "--base-token",
         MESSAGE_BACKEND_BASE_TOKEN,
         "--table-id",
-        MESSAGE_BACKEND_TABLE_ID,
-        "--view-id",
-        MESSAGE_BACKEND_VIEW_ID,
+        table_id,
         "--limit",
         str(limit),
         "--offset",
@@ -202,6 +218,8 @@ def fetch_message_backend_records(*, limit: int = 120, offset: int = 0) -> dict[
         "--as",
         "bot",
     ]
+    if view_id:
+        args.extend(["--view-id", view_id])
     result = subprocess.run(args, capture_output=True, text=True, timeout=45)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "lark-cli message backend failed")
@@ -209,6 +227,44 @@ def fetch_message_backend_records(*, limit: int = 120, offset: int = 0) -> dict[
     if not body.get("ok"):
         raise RuntimeError(json.dumps(body, ensure_ascii=False)[:500])
     return body.get("data") or {}
+
+
+def fetch_message_backend_rows_from_tables(
+    *,
+    limit: int = 160,
+    page_size: int = 200,
+    max_pages_per_table: int = 4,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen_message_ids: set[str] = set()
+    per_table_limit = max(limit, page_size)
+    for table in MESSAGE_BACKEND_TABLES:
+        table_id = str(table["table_id"])
+        table_name = str(table["table_name"])
+        view_id = table.get("view_id")
+        offset = 0
+        table_row_count = 0
+        for _ in range(max(1, max_pages_per_table)):
+            payload = fetch_message_backend_records(
+                limit=min(max(page_size, 1), 500),
+                offset=offset,
+                table_id=table_id,
+                view_id=str(view_id) if view_id else None,
+            )
+            page_rows = _message_backend_rows(payload, table_id=table_id, table_name=table_name)
+            for row in page_rows:
+                message_id = _cell_text(row.get("消息id"))
+                if message_id and message_id in seen_message_ids:
+                    continue
+                if message_id:
+                    seen_message_ids.add(message_id)
+                rows.append(row)
+                table_row_count += 1
+            if not payload.get("has_more") or table_row_count >= per_table_limit:
+                break
+            offset += min(max(page_size, 1), 500)
+    rows.sort(key=lambda item: _message_backend_time(item) or datetime.min, reverse=True)
+    return rows[:limit]
 
 
 def _clean_message_text(value: Any) -> str:
@@ -251,14 +307,24 @@ def _cell_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _message_backend_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _message_backend_rows(
+    data: dict[str, Any],
+    *,
+    table_id: str | None = None,
+    table_name: str | None = None,
+) -> list[dict[str, Any]]:
     fields = data.get("fields") or []
     rows = data.get("data") or []
+    record_ids = data.get("record_id_list") or []
     normalized: list[dict[str, Any]] = []
-    for row in rows:
+    for row_index, row in enumerate(rows):
         if not isinstance(row, list):
             continue
         item = {str(fields[index]): row[index] for index in range(min(len(fields), len(row)))}
+        item["_source_table_id"] = table_id
+        item["_source_table_name"] = table_name
+        if row_index < len(record_ids):
+            item["_source_record_id"] = record_ids[row_index]
         normalized.append(item)
     return normalized
 
@@ -284,9 +350,8 @@ def build_message_backend_chat_clusters(
         return []
 
     cutoff = datetime.now() - timedelta(minutes=max(1, recent_minutes)) if recent_minutes is not None else datetime.now() - timedelta(hours=max(1, recent_hours))
-    data = fetch_message_backend_records(limit=min(max(limit, 1), 200))
     grouped: dict[str, dict[str, Any]] = {}
-    for row in _message_backend_rows(data):
+    for row in fetch_message_backend_rows_from_tables(limit=max(limit, 1)):
         message_time = _message_backend_time(row)
         if not message_time or message_time < cutoff:
             continue
