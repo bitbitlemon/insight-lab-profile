@@ -109,4 +109,9 @@ def list_events(
     if not res.get("ok"):
         log.warning("list_events failed: %s", res.get("error"))
         return []
-    return (res.get("data") or {}).get("items") or []
+    data = res.get("data") or {}
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("items") or []
+    return []

@@ -145,6 +145,14 @@ export const syncLarkCalendarEvents = async (payload: {
   return data;
 };
 
+export const syncOrgPublicCalendarEvents = async (payload: {
+  start?: string;
+  end?: string;
+}): Promise<{ calendar_id: string; calendar_name?: string; fetched: number; created: number; updated: number; skipped: number }> => {
+  const { data } = await api.post("/calendar/events/sync-org-public", payload);
+  return data;
+};
+
 export const deleteCalendarEvent = async (eventId: number): Promise<void> => {
   await api.delete(`/calendar/events/${eventId}`);
 };

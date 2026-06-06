@@ -5,6 +5,7 @@ import {
   deleteCalendarEvent,
   listCalendarEvents,
   syncLarkCalendarEvents,
+  syncOrgPublicCalendarEvents,
   updateCalendarEvent,
   type CalendarEvent,
   type EventType,
@@ -97,6 +98,13 @@ const fmtTime = (d: Date): string =>
 
 const fmtMonthDay = (d: Date): string => `${d.getMonth() + 1}/${d.getDate()}`;
 
+const dateInputValue = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 const weekLabel = (start: Date): string => {
   const end = addDays(start, 6);
   if (start.getMonth() === end.getMonth()) {
@@ -149,8 +157,12 @@ const CalendarPage = () => {
   const [colWidth, setColWidth] = useState(120);
   const [meetingPopupVisible, setMeetingPopupVisible] = useState(false);
   const [meetingInitialDate, setMeetingInitialDate] = useState<Date | undefined>(undefined);
-  const [larkCalendarDraft, setLarkCalendarDraft] = useState({ calendarId: "", start: "", end: "" });
+  const [larkCalendarDraft, setLarkCalendarDraft] = useState(() => {
+    const start = startOfWeek(new Date());
+    return { calendarId: "", start: dateInputValue(start), end: dateInputValue(addDays(start, 7)) };
+  });
   const [syncingLarkCalendar, setSyncingLarkCalendar] = useState(false);
+  const [syncingOrgCalendar, setSyncingOrgCalendar] = useState(false);
 
   const days = useMemo(
     () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
@@ -211,6 +223,23 @@ const CalendarPage = () => {
       setSyncingLarkCalendar(false);
     }
   }, [larkCalendarDraft, loadEvents]);
+
+  const syncOrgPublicCalendar = useCallback(async () => {
+    setSyncingOrgCalendar(true);
+    try {
+      const result = await syncOrgPublicCalendarEvents({
+        start: larkCalendarDraft.start ? new Date(larkCalendarDraft.start).toISOString() : undefined,
+        end: larkCalendarDraft.end ? new Date(larkCalendarDraft.end).toISOString() : undefined,
+      });
+      weekCacheRef.current.clear();
+      await loadEvents();
+      Toast.show({ content: `公共日历同步完成：${result.fetched} 条日程` });
+    } catch {
+      Toast.show({ content: "公共日历同步失败" });
+    } finally {
+      setSyncingOrgCalendar(false);
+    }
+  }, [larkCalendarDraft.end, larkCalendarDraft.start, loadEvents]);
 
   useEffect(() => {
     void loadEvents();
@@ -462,12 +491,12 @@ const CalendarPage = () => {
               <div style={{ fontSize: 14, fontWeight: 800, color: colors.title }}>飞书订阅日历同步</div>
               <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>把指定飞书日历里的会议日程同步到系统日历。</div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1.6fr) 120px 120px auto", gap: 6, alignItems: "end", flex: "1 1 620px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(132px, 1fr))", gap: 6, alignItems: "end", flex: "1 1 720px" }}>
               <label style={{ display: "grid", gap: 3, fontSize: 11, color: colors.muted }}>
                 日历 ID
                 <input
                   value={larkCalendarDraft.calendarId}
-                  placeholder="feishu.cn_xxx@group.calendar.feishu.cn"
+                  placeholder="可选：其他飞书日历 ID"
                   onChange={(event) => setLarkCalendarDraft((prev) => ({ ...prev, calendarId: event.target.value }))}
                   style={{ height: 30, border: "1px solid #d1d5db", borderRadius: 6, padding: "0 8px", fontSize: 12 }}
                 />
@@ -493,11 +522,21 @@ const CalendarPage = () => {
               <Button
                 size="mini"
                 color="primary"
+                fill="outline"
+                loading={syncingOrgCalendar}
+                onClick={() => void syncOrgPublicCalendar()}
+                style={{ "--height": "30px" } as CSSProperties}
+              >
+                同步公共日历
+              </Button>
+              <Button
+                size="mini"
+                color="primary"
                 loading={syncingLarkCalendar}
                 onClick={() => void syncSubscribedLarkCalendar()}
                 style={{ "--height": "30px" } as CSSProperties}
               >
-                同步日历
+                同步指定日历
               </Button>
             </div>
           </div>

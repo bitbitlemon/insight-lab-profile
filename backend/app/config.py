@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
 
     lark_cli_path: str = "/home/ubuntu/.npm-global/bin/lark-cli"
+    lark_org_public_calendar_id: str = "feishu.cn_cEncrdzh8lq6kPll9SnSoa@group.calendar.feishu.cn"
+    lark_org_public_calendar_name: str = "实验室公共日历"
 
     sync_incremental_interval_sec: int = 300
     sync_full_cron_hour: int = 3

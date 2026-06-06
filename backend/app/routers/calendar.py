@@ -9,6 +9,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.config import settings
 from app.deps import get_current_user
 from app.models import CalendarEvent, ClassSchedule, LeaveRequest, LarkUserStatus, Member
 from app.schemas.common import PageResponse
@@ -136,7 +137,7 @@ class CalendarEventCreate(BaseModel):
 
 
 class LarkCalendarSyncPayload(BaseModel):
-    calendar_id: str
+    calendar_id: str = ""
     start: datetime | None = None
     end: datetime | None = None
 
@@ -200,6 +201,27 @@ def sync_lark_calendar_events_api(
     if end <= start:
         raise HTTPException(400, "结束时间必须晚于开始时间")
     return sync_lark_calendar_events(db, calendar_id, start, end, current.open_id)
+
+
+@router.post("/events/sync-org-public")
+def sync_org_public_calendar_events_api(
+    payload: LarkCalendarSyncPayload,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_user),
+):
+    if not _is_schedule_manager(current):
+        raise HTTPException(403, "仅管理者可同步飞书日历")
+    calendar_id = settings.lark_org_public_calendar_id.strip()
+    if not calendar_id:
+        raise HTTPException(400, "未配置组织公共日历 ID")
+    now = datetime.utcnow()
+    start = payload.start or (now - timedelta(days=30))
+    end = payload.end or (now + timedelta(days=120))
+    if end <= start:
+        raise HTTPException(400, "结束时间必须晚于开始时间")
+    result = sync_lark_calendar_events(db, calendar_id, start, end, current.open_id)
+    result["calendar_name"] = settings.lark_org_public_calendar_name
+    return result
 
 
 @router.post("/events", response_model=CalendarEventRead, status_code=201)

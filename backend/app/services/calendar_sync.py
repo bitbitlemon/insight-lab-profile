@@ -27,10 +27,10 @@ def _lark_get_event(calendar_id: str, event_id: str) -> dict | None:
 
 
 def _parse_ts(value) -> datetime | None:
-    """飞书时间戳字符串或 ISO 字符串解析为 datetime."""
+    """飞书时间戳字符串、ISO 字符串或 agenda 时间对象解析为 datetime."""
     if not value: return None
     if isinstance(value, dict):
-        value = value.get("timestamp") or value.get("date")
+        value = value.get("timestamp") or value.get("datetime") or value.get("date")
     if not value: return None
     s = str(value)
     if s.isdigit():
@@ -60,7 +60,7 @@ def _event_description(value: dict) -> str | None:
 
 
 def _event_organizer(value: dict) -> str | None:
-    organizer = value.get("organizer")
+    organizer = value.get("organizer") or value.get("event_organizer")
     if isinstance(organizer, dict):
         return organizer.get("user_id") or organizer.get("open_id") or organizer.get("id")
     return value.get("creator_id") or value.get("organizer_id")
