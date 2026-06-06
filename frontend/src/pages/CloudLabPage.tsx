@@ -2744,7 +2744,19 @@ const LabScene = ({
       to: THREE.Vector3;
       spin: number;
     };
+    type WhipSceneEffect = {
+      line: THREE.Line;
+      label: THREE.Sprite;
+      startAt: number;
+      duration: number;
+      from: THREE.Vector3;
+      to: THREE.Vector3;
+      control: THREE.Vector3;
+    };
     const interactionEffects: InteractionSceneEffect[] = [];
+    const whipEffects: WhipSceneEffect[] = [];
+    let cameraShakeUntil = 0;
+    let cameraShakePower = 0;
     const draggableRaycastTargets = draggableObjects.map((item) => item.object);
     const agentRaycastTargets = agents.map((agent) => agent.rig.group);
     const moveVector = new THREE.Vector3();
@@ -2977,6 +2989,25 @@ const LabScene = ({
         spin: options?.spin ?? 7.2,
       });
     };
+    const spawnWhipCrack = (agent: RuntimeAgent, target: THREE.Vector3) => {
+      const side = seededOffset(agent.phaseOffset, 173) > 0.5 ? 1 : -1;
+      const from = target.clone().add(new THREE.Vector3(side * 2.1, 0.95, 1.15));
+      const to = target.clone().add(new THREE.Vector3(-side * 0.1, 0.05, -0.08));
+      const control = target.clone().add(new THREE.Vector3(side * 0.75, 1.28, 0.45));
+      const geometry = new THREE.BufferGeometry().setFromPoints(Array.from({ length: 18 }, () => from.clone()));
+      const material = new THREE.LineBasicMaterial({ color: 0x7c2d12, linewidth: 3, transparent: true, opacity: 1 });
+      const line = new THREE.Line(geometry, material);
+      scene.add(line);
+      const label = createTextSprite("啪!", true);
+      label.position.copy(to).add(new THREE.Vector3(0.1, 0.78, 0));
+      label.scale.set(0.78, 0.34, 1);
+      label.visible = false;
+      scene.add(label);
+      whipEffects.push({ line, label, startAt: clock.elapsedTime, duration: 0.62, from, to, control });
+      agent.rig.group.userData.whipHitUntil = clock.elapsedTime + 0.72;
+      cameraShakeUntil = clock.elapsedTime + 0.28;
+      cameraShakePower = 0.045;
+    };
     const playInteractionEffect = (memberId: string, kind: InteractionTool) => {
       const agent = agentByMemberId(memberId);
       if (!agent) return;
@@ -3003,12 +3034,7 @@ const LabScene = ({
         return;
       }
       if (kind === "whip") {
-        spawnInteractionSprite("whip", target.clone().add(new THREE.Vector3(0.2, 0.25, 0)), {
-          from: target.clone().add(new THREE.Vector3(-0.9, 0.55, 0.2)),
-          duration: 0.5,
-          scale: 1.05,
-          spin: 5,
-        });
+        spawnWhipCrack(agent, target);
         showAgentEmoji(agent, "bisheng", 2.8);
         agent.state = "working";
         agent.holdUntil = clock.elapsedTime + 8;
@@ -3328,6 +3354,43 @@ const LabScene = ({
           interactionEffects.splice(index, 1);
         }
       }
+      for (let index = whipEffects.length - 1; index >= 0; index -= 1) {
+        const effect = whipEffects[index];
+        const progress = Math.min(1, (now - effect.startAt) / effect.duration);
+        const visibleProgress = Math.min(1, progress / 0.72);
+        const points: THREE.Vector3[] = [];
+        for (let pointIndex = 0; pointIndex < 18; pointIndex += 1) {
+          const t = pointIndex / 17;
+          const head = Math.min(1, Math.max(0, visibleProgress * 1.28 - (1 - t) * 0.38));
+          const curveT = t * head;
+          const left = effect.from.clone().lerp(effect.control, curveT);
+          const right = effect.control.clone().lerp(effect.to, curveT);
+          const point = left.lerp(right, curveT);
+          point.y += Math.sin((t + progress * 1.8) * Math.PI) * 0.18 * (1 - progress);
+          points.push(point);
+        }
+        effect.line.geometry.setFromPoints(points);
+        const lineMat = effect.line.material as THREE.LineBasicMaterial;
+        lineMat.opacity = progress > 0.72 ? Math.max(0, 1 - (progress - 0.72) / 0.28) : 1;
+        lineMat.needsUpdate = true;
+        effect.label.visible = progress > 0.34;
+        if (effect.label.visible) {
+          const labelPulse = 1 + Math.sin(Math.min(1, (progress - 0.34) / 0.3) * Math.PI) * 0.38;
+          effect.label.scale.set(0.78 * labelPulse, 0.34 * labelPulse, 1);
+          const labelMat = effect.label.material as THREE.SpriteMaterial;
+          labelMat.opacity = progress > 0.76 ? Math.max(0, 1 - (progress - 0.76) / 0.24) : 1;
+        }
+        if (progress >= 1) {
+          scene.remove(effect.line);
+          scene.remove(effect.label);
+          effect.line.geometry.dispose();
+          (effect.line.material as THREE.Material).dispose();
+          const labelMat = effect.label.material as THREE.SpriteMaterial;
+          labelMat.map?.dispose();
+          labelMat.dispose();
+          whipEffects.splice(index, 1);
+        }
+      }
       const currentSelectedId = selectedIdRef.current || null;
       refreshAvatarSnapshot(now);
       agents.forEach((agent) => {
@@ -3424,10 +3487,20 @@ const LabScene = ({
           decideNext(agent, now);
         }
         setAgentPose(agent.rig, agent.state, now + agent.phaseOffset);
+        if (typeof agent.rig.group.userData.whipHitUntil === "number" && now < agent.rig.group.userData.whipHitUntil) {
+          agent.rig.group.rotation.z = Math.sin(now * 72 + agent.phaseOffset) * 0.09;
+        } else if (!agent.throwMotion) {
+          agent.rig.group.rotation.z *= 0.74;
+        }
         if (isSelected) agent.rig.group.scale.setScalar(1.3);
       });
       resolveAgentCollisions();
       camera.position.lerp(targetCameraPos, 0.045);
+      if (now < cameraShakeUntil) {
+        const shake = cameraShakePower * Math.max(0, (cameraShakeUntil - now) / 0.28);
+        camera.position.x += (Math.random() - 0.5) * shake;
+        camera.position.y += (Math.random() - 0.5) * shake * 0.65;
+      }
       camera.lookAt(targetLookAt);
       renderer.render(scene, camera);
       raf = window.requestAnimationFrame(animate);
@@ -3465,6 +3538,15 @@ const LabScene = ({
         const material = effect.sprite.material as THREE.SpriteMaterial;
         material.map?.dispose();
         material.dispose();
+      });
+      whipEffects.forEach((effect) => {
+        scene.remove(effect.line);
+        scene.remove(effect.label);
+        effect.line.geometry.dispose();
+        (effect.line.material as THREE.Material).dispose();
+        const labelMaterial = effect.label.material as THREE.SpriteMaterial;
+        labelMaterial.map?.dispose();
+        labelMaterial.dispose();
       });
       scene.traverse((object) => {
         const mesh = object as THREE.Mesh;
