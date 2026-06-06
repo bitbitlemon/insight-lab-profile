@@ -292,6 +292,41 @@ const cloudLabStyles = `
     pointer-events: auto;
     font-family: Arial, sans-serif;
   }
+  .cloud-lab-chat-time-panel {
+    position: absolute;
+    left: 18px;
+    top: 62px;
+    width: min(420px, calc(100vw - 36px));
+    border: 1px solid rgba(156,163,175,0.45);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.94);
+    box-shadow: 0 18px 40px rgba(31,41,55,0.14);
+    backdrop-filter: blur(12px);
+    padding: 12px;
+    z-index: 6;
+    pointer-events: auto;
+    font-family: Arial, sans-serif;
+  }
+  .cloud-lab-chat-time-presets {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 7px;
+    margin-top: 10px;
+  }
+  .cloud-lab-chat-time-fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 7px;
+    align-items: end;
+    margin-top: 10px;
+  }
+  .cloud-lab-chat-time-summary {
+    margin-top: 8px;
+    color: #475569;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.45;
+  }
   .cloud-lab-availability-fields {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
@@ -2199,6 +2234,49 @@ const toDateTimeLocalValue = (value: Date) => {
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
 };
 
+type ChatTimePreset = "30m" | "2h" | "today" | "yesterday" | "custom";
+
+type ChatTimeRange = {
+  preset: ChatTimePreset;
+  start: string;
+  end: string;
+};
+
+const chatPresetLabels: Record<ChatTimePreset, string> = {
+  "30m": "近30分",
+  "2h": "近2小时",
+  today: "今天",
+  yesterday: "昨天",
+  custom: "自定义",
+};
+
+const getDefaultChatTimeRange = (): ChatTimeRange => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setMinutes(start.getMinutes() - 30);
+  return { preset: "30m", start: toDateTimeLocalValue(start), end: toDateTimeLocalValue(end) };
+};
+
+const getChatPresetRange = (preset: Exclude<ChatTimePreset, "custom">): ChatTimeRange => {
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+  if (preset === "30m") start.setMinutes(start.getMinutes() - 30);
+  if (preset === "2h") start.setHours(start.getHours() - 2);
+  if (preset === "today") start.setHours(0, 0, 0, 0);
+  if (preset === "yesterday") {
+    start.setDate(start.getDate() - 1);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
+  }
+  return { preset, start: toDateTimeLocalValue(start), end: toDateTimeLocalValue(end) };
+};
+
+const chatRangeLabel = (range: ChatTimeRange) => {
+  if (range.preset !== "custom") return chatPresetLabels[range.preset];
+  return `${range.start.replace("T", " ")} - ${range.end.replace("T", " ")}`;
+};
+
 const parseChineseDateTime = (text: string, fallbackHours = 1) => {
   const value = new Date();
   value.setMinutes(0, 0, 0);
@@ -3920,21 +3998,25 @@ const TaskPanel = ({
 const LabToolbar = ({
   departmentOpen,
   availabilityOpen,
+  chatTimeOpen,
   messageConfigOpen,
   findGameActive,
   canConfigureMessages,
   onToggleDepartments,
   onToggleAvailability,
+  onToggleChatTime,
   onToggleMessageConfig,
   onStartFindGame,
 }: {
   departmentOpen: boolean;
   availabilityOpen: boolean;
+  chatTimeOpen: boolean;
   messageConfigOpen: boolean;
   findGameActive: boolean;
   canConfigureMessages: boolean;
   onToggleDepartments: () => void;
   onToggleAvailability: () => void;
+  onToggleChatTime: () => void;
   onToggleMessageConfig: () => void;
   onStartFindGame: () => void;
 }) => (
@@ -3945,6 +4027,9 @@ const LabToolbar = ({
     <button type="button" className="cloud-lab-chip-button" data-active={availabilityOpen} onClick={onToggleAvailability}>
       空闲
     </button>
+    <button type="button" className="cloud-lab-chip-button" data-active={chatTimeOpen} onClick={onToggleChatTime}>
+      群聊时间
+    </button>
     {canConfigureMessages ? (
       <button type="button" className="cloud-lab-chip-button" data-active={messageConfigOpen} onClick={onToggleMessageConfig}>
         消息群
@@ -3953,6 +4038,67 @@ const LabToolbar = ({
     <button type="button" className="cloud-lab-chip-button" data-active={findGameActive} onClick={onStartFindGame}>
       找人
     </button>
+  </div>
+);
+
+const ChatTimePanel = ({
+  range,
+  loading,
+  onRangeChange,
+  onApply,
+  onClose,
+}: {
+  range: ChatTimeRange;
+  loading: boolean;
+  onRangeChange: (range: ChatTimeRange) => void;
+  onApply: () => void;
+  onClose: () => void;
+}) => (
+  <div className="cloud-lab-chat-time-panel">
+    <div className="cloud-lab-task-title">
+      <span>群聊时间范围</span>
+      <button type="button" className="cloud-lab-close" onClick={onClose}>×</button>
+    </div>
+    <div className="cloud-lab-member-meta" style={{ marginTop: 6 }}>
+      当前范围：{chatRangeLabel(range)}
+    </div>
+    <div className="cloud-lab-chat-time-presets">
+      {(["30m", "2h", "today", "yesterday"] as const).map((preset) => (
+        <button
+          key={preset}
+          type="button"
+          className="cloud-lab-chip-button"
+          data-active={range.preset === preset}
+          onClick={() => onRangeChange(getChatPresetRange(preset))}
+        >
+          {chatPresetLabels[preset]}
+        </button>
+      ))}
+    </div>
+    <div className="cloud-lab-chat-time-fields">
+      <label>
+        <span className="cloud-lab-field-label">开始</span>
+        <input
+          className="cloud-lab-message-input"
+          type="datetime-local"
+          value={range.start}
+          onChange={(event) => onRangeChange({ ...range, preset: "custom", start: event.target.value })}
+        />
+      </label>
+      <label>
+        <span className="cloud-lab-field-label">结束</span>
+        <input
+          className="cloud-lab-message-input"
+          type="datetime-local"
+          value={range.end}
+          onChange={(event) => onRangeChange({ ...range, preset: "custom", end: event.target.value })}
+        />
+      </label>
+      <Button size="mini" color="primary" loading={loading} onClick={onApply}>应用</Button>
+    </div>
+    <div className="cloud-lab-chat-time-summary">
+      自定义范围精确到分钟；快捷范围会在自动刷新时按当前时间重新计算。
+    </div>
   </div>
 );
 
@@ -4783,6 +4929,9 @@ const CloudLabPage = () => {
   });
   const [departmentPanelOpen, setDepartmentPanelOpen] = useState(false);
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
+  const [chatTimeOpen, setChatTimeOpen] = useState(false);
+  const [chatTimeRange, setChatTimeRange] = useState<ChatTimeRange>(() => getDefaultChatTimeRange());
+  const [chatTimeLoading, setChatTimeLoading] = useState(false);
   const [availabilityRange, setAvailabilityRange] = useState(() => {
     const start = new Date();
     start.setMinutes(Math.floor(start.getMinutes() / 15) * 15, 0, 0);
@@ -4967,6 +5116,21 @@ const CloudLabPage = () => {
     ];
   }, [directoryMembers, me?.department, scope, selectedDepartment, selectedSpecialty]);
 
+  const chatClusterParams = useCallback(() => {
+    const base = { max_chats: 80, message_page_size: 80 };
+    if (chatTimeRange.preset === "30m") return { ...base, recent_minutes: 30 };
+    if (chatTimeRange.preset === "2h") return { ...base, recent_minutes: 120 };
+    const effectiveRange = chatTimeRange.preset === "custom"
+      ? chatTimeRange
+      : getChatPresetRange(chatTimeRange.preset);
+    const start = new Date(effectiveRange.start);
+    const end = new Date(effectiveRange.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
+      return { ...base, recent_minutes: 30 };
+    }
+    return { ...base, recent_minutes: null, start_at: toLocalIso(start), end_at: toLocalIso(end) };
+  }, [chatTimeRange]);
+
   const loadLabData = useCallback(async (options?: { refresh?: boolean; refreshMemberIds?: string[] }) => {
     if (!me) {
       setMembers([]);
@@ -4982,7 +5146,7 @@ const CloudLabPage = () => {
     loadSeqRef.current = seq;
     const [scopedMembers, clusters] = await Promise.all([
       resolveMembersForScope(),
-      listLabChatClusters({ max_chats: 80, message_page_size: 80, recent_minutes: 30 }).catch(() => [] as LabChatCluster[]),
+      listLabChatClusters(chatClusterParams()).catch(() => [] as LabChatCluster[]),
     ]);
     if (loadSeqRef.current !== seq) return;
     const mergedMembers = await mergeChatMembers(scopedMembers, clusters);
@@ -5068,7 +5232,7 @@ const CloudLabPage = () => {
     if (loadSeqRef.current !== seq) return;
     setBusySlots(Object.fromEntries(visibleIds.map((openId) => [openId, busyCacheRef.current[openId] || []])));
     setClassSchedules(Object.fromEntries(visibleIds.map((openId) => [openId, classCacheRef.current[openId] || []])));
-  }, [me, mergeChatMembers, resolveMembersForScope]);
+  }, [chatClusterParams, me, mergeChatMembers, resolveMembersForScope]);
 
   const queryAvailability = useCallback(async () => {
     const start = new Date(availabilityRange.start);
@@ -5098,6 +5262,22 @@ const CloudLabPage = () => {
       setAvailabilityLoading(false);
     }
   }, [availabilityRange.end, availabilityRange.start, resolveMembersForScope]);
+
+  const applyChatTimeRange = useCallback(async () => {
+    const start = new Date(chatTimeRange.start);
+    const end = new Date(chatTimeRange.end);
+    if (chatTimeRange.preset === "custom" && (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end)) {
+      Toast.show({ icon: "fail", content: "请选择有效群聊时间段" });
+      return;
+    }
+    setChatTimeLoading(true);
+    try {
+      await loadLabData({ refresh: true });
+      Toast.show({ icon: "success", content: "群聊时间已更新" });
+    } finally {
+      setChatTimeLoading(false);
+    }
+  }, [chatTimeRange.end, chatTimeRange.preset, chatTimeRange.start, loadLabData]);
 
   useEffect(() => {
     let active = true;
@@ -5163,7 +5343,7 @@ const CloudLabPage = () => {
     if (!me?.open_id) return undefined;
     let cancelled = false;
     const syncRecentChats = () => {
-      listLabChatClusters({ max_chats: 80, message_page_size: 80, recent_minutes: 30 })
+      listLabChatClusters(chatClusterParams())
         .then((rows) => {
           if (!cancelled) setChatClusters(rows);
         })
@@ -5174,7 +5354,7 @@ const CloudLabPage = () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [me?.open_id]);
+  }, [chatClusterParams, me?.open_id]);
 
   const avatars = useMemo<LabAvatar[]>(
     () =>
@@ -5635,12 +5815,13 @@ const CloudLabPage = () => {
 
   const closeFloatingPanels = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
-    if (target?.closest(".cloud-lab-department-panel, .cloud-lab-member-sheet, .cloud-lab-area-strip, .cloud-lab-toolbar, .cloud-lab-interaction-toolbox, .cloud-lab-message-config, .cloud-lab-availability-panel, .cloud-lab-find-game-panel")) {
+    if (target?.closest(".cloud-lab-department-panel, .cloud-lab-member-sheet, .cloud-lab-area-strip, .cloud-lab-toolbar, .cloud-lab-interaction-toolbox, .cloud-lab-message-config, .cloud-lab-availability-panel, .cloud-lab-chat-time-panel, .cloud-lab-find-game-panel")) {
       return;
     }
     setSelectedId(null);
     setDepartmentPanelOpen(false);
     setAvailabilityOpen(false);
+    setChatTimeOpen(false);
     setInteractionToolsOpen(false);
     setExpandedDepartments({});
   }, []);
@@ -5670,11 +5851,12 @@ const CloudLabPage = () => {
             onStop={() => setFindGame((current) => ({ ...current, active: false, message: "已结束" }))}
           />
           <div className="cloud-lab-view-hint">
-            点击画面后用 WASD 平移 · 最近半小时群聊 · 点击圆桌玩贪吃蛇
+            点击画面后用 WASD 平移 · 群聊：{chatRangeLabel(chatTimeRange)} · 点击圆桌玩贪吃蛇
           </div>
           <LabToolbar
             departmentOpen={departmentPanelOpen}
             availabilityOpen={availabilityOpen}
+            chatTimeOpen={chatTimeOpen}
             messageConfigOpen={messageConfigOpen}
             findGameActive={findGame.active}
             canConfigureMessages={canViewMemberDetails}
@@ -5686,12 +5868,22 @@ const CloudLabPage = () => {
                 return next;
               });
               setAvailabilityOpen(false);
+              setChatTimeOpen(false);
               setMessageConfigOpen(false);
               setInteractionToolsOpen(false);
             }}
             onToggleAvailability={() => {
               setAvailabilityOpen((value) => !value);
               setDepartmentPanelOpen(false);
+              setChatTimeOpen(false);
+              setMessageConfigOpen(false);
+              setInteractionToolsOpen(false);
+              setExpandedDepartments({});
+            }}
+            onToggleChatTime={() => {
+              setChatTimeOpen((value) => !value);
+              setDepartmentPanelOpen(false);
+              setAvailabilityOpen(false);
               setMessageConfigOpen(false);
               setInteractionToolsOpen(false);
               setExpandedDepartments({});
@@ -5700,12 +5892,14 @@ const CloudLabPage = () => {
               setMessageConfigOpen((value) => !value);
               setDepartmentPanelOpen(false);
               setAvailabilityOpen(false);
+              setChatTimeOpen(false);
               setInteractionToolsOpen(false);
               setExpandedDepartments({});
             }}
             onStartFindGame={() => {
               setDepartmentPanelOpen(false);
               setAvailabilityOpen(false);
+              setChatTimeOpen(false);
               setMessageConfigOpen(false);
               setInteractionToolsOpen(false);
               setExpandedDepartments({});
@@ -5734,6 +5928,15 @@ const CloudLabPage = () => {
                 handleSelectMember(memberId);
                 setAvailabilityOpen(false);
               }}
+            />
+          ) : null}
+          {chatTimeOpen ? (
+            <ChatTimePanel
+              range={chatTimeRange}
+              loading={chatTimeLoading}
+              onRangeChange={setChatTimeRange}
+              onApply={() => void applyChatTimeRange()}
+              onClose={() => setChatTimeOpen(false)}
             />
           ) : null}
           {messageConfigOpen && canViewMemberDetails ? (

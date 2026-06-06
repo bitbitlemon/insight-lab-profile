@@ -306,7 +306,9 @@ export const listLabChatClusters = async (params?: {
   max_chats?: number;
   message_page_size?: number;
   recent_hours?: number;
-  recent_minutes?: number;
+  recent_minutes?: number | null;
+  start_at?: string;
+  end_at?: string;
 }): Promise<LabChatCluster[]> => {
   const { data } = await api.get<LabChatCluster[]>("/lab/chat-clusters", { params });
   return data;

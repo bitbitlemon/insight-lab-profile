@@ -336,6 +336,8 @@ def build_message_backend_chat_clusters(
     min_members: int = 1,
     recent_hours: int = 6,
     recent_minutes: int | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
 ) -> list[dict[str, Any]]:
     members = {
         row.open_id: row
@@ -349,11 +351,14 @@ def build_message_backend_chat_clusters(
     if not members:
         return []
 
-    cutoff = datetime.now() - timedelta(minutes=max(1, recent_minutes)) if recent_minutes is not None else datetime.now() - timedelta(hours=max(1, recent_hours))
+    cutoff = start_at or (datetime.now() - timedelta(minutes=max(1, recent_minutes)) if recent_minutes is not None else datetime.now() - timedelta(hours=max(1, recent_hours)))
+    upper_bound = end_at
     grouped: dict[str, dict[str, Any]] = {}
     for row in fetch_message_backend_rows_from_tables(limit=max(limit, 1)):
         message_time = _message_backend_time(row)
         if not message_time or message_time < cutoff:
+            continue
+        if upper_bound and message_time > upper_bound:
             continue
         chat_id = _cell_text(row.get("群id") or row.get("群")) or _cell_text(row.get("对应群聊名称"))
         chat_name = _cell_text(row.get("对应群聊名称") or row.get("群")) or chat_id
@@ -403,6 +408,8 @@ def build_recent_chat_clusters(
     min_members: int = 1,
     recent_hours: int = 6,
     recent_minutes: int | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
 ) -> list[dict[str, Any]]:
     try:
         backend_clusters = build_message_backend_chat_clusters(
@@ -411,6 +418,8 @@ def build_recent_chat_clusters(
             min_members=min_members,
             recent_hours=recent_hours,
             recent_minutes=recent_minutes,
+            start_at=start_at,
+            end_at=end_at,
         )
         if backend_clusters:
             return backend_clusters[:max_chats]
@@ -425,9 +434,9 @@ def build_recent_chat_clusters(
     }
     if not members:
         return []
-    cutoff = datetime.now() - timedelta(minutes=max(1, recent_minutes)) if recent_minutes is not None else datetime.now() - timedelta(hours=max(1, recent_hours))
+    cutoff = start_at or (datetime.now() - timedelta(minutes=max(1, recent_minutes)) if recent_minutes is not None else datetime.now() - timedelta(hours=max(1, recent_hours)))
     start = str(int(cutoff.timestamp()))
-    end = str(int(datetime.now().timestamp()))
+    end = str(int((end_at or datetime.now()).timestamp()))
 
     chats: list[dict[str, Any]] = []
     page_token: str | None = None
@@ -464,6 +473,8 @@ def build_recent_chat_clusters(
                 continue
             message_time = _parse_lark_time(message.get("create_time") or message.get("created_at") or message.get("create_time_ms"))
             if not message_time or message_time < cutoff:
+                continue
+            if end_at and message_time > end_at:
                 continue
             recent_message_count += 1
             if open_id not in names_by_id:

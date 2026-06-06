@@ -668,10 +668,16 @@ def list_chat_clusters(
     max_chats: int = Query(40, ge=1, le=120),
     message_page_size: int = Query(30, ge=5, le=100),
     recent_hours: int = Query(1, ge=1, le=72),
-    recent_minutes: int = Query(30, ge=1, le=1440),
+    recent_minutes: int | None = Query(30, ge=1, le=1440),
+    start_at: datetime | None = Query(None),
+    end_at: datetime | None = Query(None),
     db: Session = Depends(get_db),
     _: Member = Depends(get_current_user),
 ):
+    start_at = start_at.replace(tzinfo=None) if start_at and start_at.tzinfo else start_at
+    end_at = end_at.replace(tzinfo=None) if end_at and end_at.tzinfo else end_at
+    if start_at and end_at and start_at >= end_at:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "start_at must be before end_at")
     try:
         rows = build_recent_chat_clusters(
             db,
@@ -679,6 +685,8 @@ def list_chat_clusters(
             message_page_size=message_page_size,
             recent_hours=recent_hours,
             recent_minutes=recent_minutes,
+            start_at=start_at,
+            end_at=end_at,
         )
     except Exception:
         return []
