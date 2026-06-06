@@ -167,7 +167,7 @@ class LabInteraction(Base):
 
     __tablename__ = "lab_interactions"
     __table_args__ = (
-        CheckConstraint("kind IN ('flower','egg','throw','hammer','whip')", name="ck_lab_interactions_kind"),
+        CheckConstraint("kind IN ('flower','egg','throw','hammer','whip','water')", name="ck_lab_interactions_kind"),
         Index("idx_lab_interactions_target", "target_open_id"),
         Index("idx_lab_interactions_actor", "actor_open_id"),
         Index("idx_lab_interactions_created", "created_at"),

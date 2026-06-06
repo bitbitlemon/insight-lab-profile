@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
         lab_interactions_sql = conn.execute(
             text("SELECT sql FROM sqlite_master WHERE type='table' AND name='lab_interactions'")
         ).scalar()
-        if lab_interactions_sql and ("hammer" not in lab_interactions_sql or "whip" not in lab_interactions_sql):
+        if lab_interactions_sql and any(kind not in lab_interactions_sql for kind in ("hammer", "whip", "water")):
             conn.execute(text("ALTER TABLE lab_interactions RENAME TO lab_interactions_old"))
             conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_target"))
             conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_actor"))

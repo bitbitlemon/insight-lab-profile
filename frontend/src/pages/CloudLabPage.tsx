@@ -110,6 +110,64 @@ const cloudLabStyles = `
     font-size: 15px;
     vertical-align: -2px;
   }
+  .cloud-lab-game-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(17,24,39,0.46);
+    pointer-events: auto;
+    font-family: Arial, sans-serif;
+  }
+  .cloud-lab-snake-game {
+    width: min(440px, calc(100vw - 24px));
+    border: 1px solid rgba(148,163,184,0.56);
+    border-radius: 10px;
+    background: #111827;
+    box-shadow: 0 22px 52px rgba(15,23,42,0.35);
+    padding: 12px;
+    color: #e5e7eb;
+  }
+  .cloud-lab-snake-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    font-weight: 800;
+  }
+  .cloud-lab-snake-board {
+    display: grid;
+    grid-template-columns: repeat(18, 1fr);
+    aspect-ratio: 1;
+    border: 3px solid #334155;
+    background: #020617;
+    image-rendering: pixelated;
+  }
+  .cloud-lab-snake-cell {
+    border: 1px solid rgba(30,41,59,0.55);
+    background: #020617;
+  }
+  .cloud-lab-snake-cell[data-kind="snake"] {
+    background: #22c55e;
+    box-shadow: inset 0 0 0 2px rgba(187,247,208,0.35);
+  }
+  .cloud-lab-snake-cell[data-kind="head"] {
+    background: #86efac;
+  }
+  .cloud-lab-snake-cell[data-kind="food"] {
+    background: #f43f5e;
+  }
+  .cloud-lab-snake-controls {
+    display: grid;
+    grid-template-columns: repeat(3, 44px);
+    justify-content: center;
+    gap: 6px;
+    margin-top: 10px;
+  }
   .cloud-lab-view-hint {
     position: absolute;
     left: 18px;
@@ -845,6 +903,7 @@ const interactionToolIcons: Record<InteractionTool, string> = {
   egg: "🥚",
   hammer: "🔨",
   whip: "〰",
+  water: "🪣",
   throw: "↗",
 };
 
@@ -1374,14 +1433,16 @@ const buildMeetingRoom = (scene: THREE.Scene) => {
   scene.add(group);
 };
 
-const buildChatRoundTable = (scene: THREE.Scene, center: THREE.Vector3, seatCount: number, clusterIndex: number) => {
+const buildChatRoundTable = (scene: THREE.Scene, center: THREE.Vector3, seatCount: number, clusterIndex: number, snakeTargets: THREE.Object3D[] = []) => {
   const group = new THREE.Group();
   group.position.set(center.x, 0, center.z);
   const visualSeatCount = seatCount > 0 ? seatCount : 4;
   const tableRadius = Math.min(1.28, 0.46 + Math.sqrt(visualSeatCount) * 0.15);
   const accentColors = [0x7dd3fc, 0x86efac, 0xfde68a, 0xfca5a5, 0xc4b5fd, 0xfdba74];
   addCylinder(group, tableRadius, tableRadius, 0.12, [0, 0.5, 0], 0xf3f4f0);
-  addCylinder(group, tableRadius * 0.94, tableRadius * 0.94, 0.018, [0, 0.575, 0], accentColors[clusterIndex % accentColors.length]);
+  const tabletop = addCylinder(group, tableRadius * 0.94, tableRadius * 0.94, 0.018, [0, 0.575, 0], accentColors[clusterIndex % accentColors.length]);
+  tabletop.userData.snakeGameTable = true;
+  snakeTargets.push(tabletop);
   addCylinder(group, 0.08, 0.11, 0.48, [0, 0.25, 0], 0xd4d4cf);
   addCylinder(group, tableRadius * 0.42, tableRadius * 0.48, 0.035, [0, 0.035, 0], 0xcbcbc4);
   const chairCount = Math.min(visualSeatCount, 36);
@@ -2144,6 +2205,7 @@ const LabScene = ({
   selectedId,
   activeInteractionTool,
   onUseInteractionTool,
+  onOpenSnakeGame,
   onSelectMember,
 }: {
   avatars: LabAvatar[];
@@ -2151,7 +2213,8 @@ const LabScene = ({
   activeArea: AreaKey | null;
   selectedId?: string | null;
   activeInteractionTool: InteractionTool | null;
-  onUseInteractionTool: (memberId: string, kind: InteractionTool) => void;
+  onUseInteractionTool: (memberIds: string | string[], kind: InteractionTool) => void;
+  onOpenSnakeGame: () => void;
   onSelectMember: (memberId: string) => void;
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -2159,6 +2222,7 @@ const LabScene = ({
   const onSelectMemberRef = useRef(onSelectMember);
   const activeInteractionToolRef = useRef<InteractionTool | null>(activeInteractionTool);
   const onUseInteractionToolRef = useRef(onUseInteractionTool);
+  const onOpenSnakeGameRef = useRef(onOpenSnakeGame);
   const avatarsRef = useRef(avatars);
   const activeAreaRef = useRef<AreaKey | null>(activeArea);
   const cameraControlsRef = useRef<null | { setArea: (area: AreaKey | null) => void }>(null);
@@ -2194,6 +2258,10 @@ const LabScene = ({
   useEffect(() => {
     onUseInteractionToolRef.current = onUseInteractionTool;
   }, [onUseInteractionTool]);
+
+  useEffect(() => {
+    onOpenSnakeGameRef.current = onOpenSnakeGame;
+  }, [onOpenSnakeGame]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -2347,12 +2415,13 @@ const LabScene = ({
     const discussionTableCount = Math.min(MAX_DISCUSSION_TABLES, Math.max(MIN_DISCUSSION_TABLES, discussionClusters.length));
     const selectedDiscussionZones = selectDiscussionZones(discussionTableCount, deskTargets);
     buildDiscussionZones(scene, selectedDiscussionZones);
+    const snakeGameTargets: THREE.Object3D[] = [];
     selectedDiscussionZones.forEach((_, clusterIndex) => {
       const cluster = discussionClusters[clusterIndex];
       const items = cluster ? discussionParticipants(cluster) : [];
       const center = getDiscussionTableCenter(selectedDiscussionZones, clusterIndex);
       const seatCount = items.length;
-      buildChatRoundTable(scene, center, seatCount, clusterIndex);
+      buildChatRoundTable(scene, center, seatCount, clusterIndex, snakeGameTargets);
       const radius = Math.min(1.78, 0.86 + Math.sqrt(Math.max(seatCount, 1)) * 0.14);
       items.forEach((avatar, memberIndex) => {
         if (!cluster) return;
@@ -3040,6 +3109,26 @@ const LabScene = ({
         agent.holdUntil = clock.elapsedTime + 8;
         return;
       }
+      if (kind === "water") {
+        spawnInteractionSprite("water", target.clone().add(new THREE.Vector3(0, 0.15, 0)), {
+          from: target.clone().add(new THREE.Vector3(-1.3, 1.4, 0.65)),
+          duration: 0.48,
+          scale: 0.82,
+          spin: 10,
+        });
+        for (let index = 0; index < 6; index += 1) {
+          spawnInteractionSprite("water", target.clone().add(new THREE.Vector3((Math.random() - 0.5) * 1.1, (Math.random() - 0.5) * 0.55, (Math.random() - 0.5) * 1.1)), {
+            from: target.clone().add(new THREE.Vector3(-1.2 + Math.random() * 0.8, 1.65 + Math.random() * 0.6, 0.3 + Math.random() * 0.5)),
+            duration: 0.38 + Math.random() * 0.18,
+            scale: 0.28 + Math.random() * 0.16,
+            spin: 16,
+          });
+        }
+        showAgentEmoji(agent, "han", 2.4);
+        agent.state = "running";
+        agent.holdUntil = clock.elapsedTime + 1.8;
+        return;
+      }
       spawnInteractionSprite(kind, target, { duration: kind === "egg" ? 0.54 : 0.72, scale: kind === "egg" ? 0.72 : 0.8, spin: kind === "egg" ? 13 : 5 });
       showAgentEmoji(agent, kind === "flower" ? "xiao" : "fendou", 2.4);
     };
@@ -3222,6 +3311,18 @@ const LabScene = ({
       if (finishObjectDrag(event)) return;
       if (drag.moved) return;
       updatePointerRay(event);
+      const snakeHit = raycaster.intersectObjects(snakeGameTargets, true).find((item) => {
+        let parent: THREE.Object3D | null = item.object;
+        while (parent) {
+          if (parent.userData.snakeGameTable) return true;
+          parent = parent.parent;
+        }
+        return false;
+      });
+      if (snakeHit) {
+        onOpenSnakeGameRef.current();
+        return;
+      }
       const intersections = raycaster.intersectObjects(agentRaycastTargets, true);
       const hit = intersections.find((item) => {
         let parent: THREE.Object3D | null = item.object;
@@ -3238,7 +3339,18 @@ const LabScene = ({
       if (memberId) {
         const tool = activeInteractionToolRef.current;
         if (tool) {
-          onUseInteractionToolRef.current(memberId, tool);
+          if (tool === "water") {
+            const origin = agentByMemberId(memberId)?.rig.group.position;
+            const targets = origin
+              ? agents
+                .filter((agent) => agent.rig.group.position.distanceTo(origin) <= 2.45)
+                .slice(0, 10)
+                .map((agent) => agent.rig.group.userData.memberId as string)
+              : [memberId];
+            onUseInteractionToolRef.current(targets.length ? targets : [memberId], tool);
+          } else {
+            onUseInteractionToolRef.current(memberId, tool);
+          }
           return;
         }
         handleMemberClick(memberId);
@@ -3741,6 +3853,7 @@ const interactionTools: Array<{ kind: InteractionTool; label: string }> = [
   { kind: "egg", label: "鸡蛋" },
   { kind: "hammer", label: "锤子" },
   { kind: "whip", label: "鞭子" },
+  { kind: "water", label: "大桶水" },
   { kind: "throw", label: "扔飞" },
 ];
 
@@ -3785,6 +3898,109 @@ const InteractionToolbox = ({
     ) : null}
   </div>
 );
+
+type SnakeDirection = "up" | "down" | "left" | "right";
+
+const SnakeGameOverlay = ({ onClose }: { onClose: () => void }) => {
+  const size = 18;
+  const [snake, setSnake] = useState([{ x: 8, y: 9 }, { x: 7, y: 9 }, { x: 6, y: 9 }]);
+  const [food, setFood] = useState({ x: 13, y: 9 });
+  const [score, setScore] = useState(0);
+  const [gameOver, setGameOver] = useState(false);
+  const directionRef = useRef<SnakeDirection>("right");
+
+  const placeFood = useCallback((body: Array<{ x: number; y: number }>) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const next = { x: Math.floor(Math.random() * size), y: Math.floor(Math.random() * size) };
+      if (!body.some((part) => part.x === next.x && part.y === next.y)) return next;
+    }
+    return { x: 0, y: 0 };
+  }, []);
+
+  const setDirection = useCallback((direction: SnakeDirection) => {
+    const current = directionRef.current;
+    if ((current === "up" && direction === "down") || (current === "down" && direction === "up") || (current === "left" && direction === "right") || (current === "right" && direction === "left")) return;
+    directionRef.current = direction;
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowUp" || event.key.toLowerCase() === "w") setDirection("up");
+      if (event.key === "ArrowDown" || event.key.toLowerCase() === "s") setDirection("down");
+      if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a") setDirection("left");
+      if (event.key === "ArrowRight" || event.key.toLowerCase() === "d") setDirection("right");
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, setDirection]);
+
+  useEffect(() => {
+    if (gameOver) return undefined;
+    const timer = window.setInterval(() => {
+      setSnake((current) => {
+        const head = current[0];
+        const direction = directionRef.current;
+        const next = {
+          x: head.x + (direction === "left" ? -1 : direction === "right" ? 1 : 0),
+          y: head.y + (direction === "up" ? -1 : direction === "down" ? 1 : 0),
+        };
+        if (next.x < 0 || next.x >= size || next.y < 0 || next.y >= size || current.some((part) => part.x === next.x && part.y === next.y)) {
+          setGameOver(true);
+          return current;
+        }
+        const ate = next.x === food.x && next.y === food.y;
+        const body = ate ? [next, ...current] : [next, ...current.slice(0, -1)];
+        if (ate) {
+          setScore((value) => value + 1);
+          setFood(placeFood(body));
+        }
+        return body;
+      });
+    }, 135);
+    return () => window.clearInterval(timer);
+  }, [food, gameOver, placeFood]);
+
+  const restart = () => {
+    directionRef.current = "right";
+    setSnake([{ x: 8, y: 9 }, { x: 7, y: 9 }, { x: 6, y: 9 }]);
+    setFood({ x: 13, y: 9 });
+    setScore(0);
+    setGameOver(false);
+  };
+
+  return (
+    <div className="cloud-lab-game-overlay" onPointerDown={(event) => event.stopPropagation()}>
+      <div className="cloud-lab-snake-game">
+        <div className="cloud-lab-snake-header">
+          <span>圆桌贪吃蛇 · {score}</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button type="button" className="cloud-lab-chip-button" onClick={restart}>重开</button>
+            <button type="button" className="cloud-lab-chip-button" onClick={onClose}>关闭</button>
+          </div>
+        </div>
+        <div className="cloud-lab-snake-board">
+          {Array.from({ length: size * size }, (_, index) => {
+            const x = index % size;
+            const y = Math.floor(index / size);
+            const snakeIndex = snake.findIndex((part) => part.x === x && part.y === y);
+            const kind = snakeIndex === 0 ? "head" : snakeIndex > 0 ? "snake" : food.x === x && food.y === y ? "food" : "empty";
+            return <div key={`${x}:${y}`} className="cloud-lab-snake-cell" data-kind={kind} />;
+          })}
+        </div>
+        <div className="cloud-lab-snake-controls">
+          <span />
+          <button type="button" className="cloud-lab-chip-button" onClick={() => setDirection("up")}>↑</button>
+          <span />
+          <button type="button" className="cloud-lab-chip-button" onClick={() => setDirection("left")}>←</button>
+          <button type="button" className="cloud-lab-chip-button" onClick={() => setDirection("down")}>↓</button>
+          <button type="button" className="cloud-lab-chip-button" onClick={() => setDirection("right")}>→</button>
+        </div>
+        {gameOver ? <div className="cloud-lab-member-meta" style={{ marginTop: 8, color: "#fecaca" }}>游戏结束</div> : null}
+      </div>
+    </div>
+  );
+};
 
 const DepartmentPanel = ({
   departments,
@@ -4399,6 +4615,7 @@ const CloudLabPage = () => {
   const [messageConfigOpen, setMessageConfigOpen] = useState(false);
   const [interactionToolsOpen, setInteractionToolsOpen] = useState(false);
   const [activeInteractionTool, setActiveInteractionTool] = useState<InteractionTool | null>(null);
+  const [snakeGameOpen, setSnakeGameOpen] = useState(false);
   const [labMessageConfig, setLabMessageConfig] = useState<LabMessageConfig | null>(null);
   const [messageConfigDraft, setMessageConfigDraft] = useState({ chat_id: "", chat_name: "" });
   const [memberMessageDraft, setMemberMessageDraft] = useState("");
@@ -5132,26 +5349,30 @@ const CloudLabPage = () => {
     }
   }, [labMessageConfig?.chat_id, memberMessageDraft, selectedMessageChatId]);
 
-  const sendLabInteraction = useCallback(async (memberId: string, kind: LabInteractionKind) => {
-    const key = `${memberId}:${kind}`;
+  const sendLabInteraction = useCallback(async (memberIdsInput: string | string[], kind: LabInteractionKind) => {
+    const memberIds = Array.from(new Set(Array.isArray(memberIdsInput) ? memberIdsInput : [memberIdsInput])).filter(Boolean);
+    const key = `${memberIds[0] || "none"}:${kind}`;
     setSendingInteractionKey(key);
     try {
-      await createLabInteraction({ target_open_id: memberId, kind });
+      await Promise.all(memberIds.map((memberId) => createLabInteraction({ target_open_id: memberId, kind })));
       setInteractionSummary((prev) => {
-        const current = prev[memberId] || { member_open_id: memberId, flower_count: 0, egg_count: 0 };
-        return {
-          ...prev,
-          [memberId]: {
+        const next = { ...prev };
+        memberIds.forEach((memberId) => {
+          const current = next[memberId] || { member_open_id: memberId, flower_count: 0, egg_count: 0 };
+          next[memberId] = {
             ...current,
             flower_count: current.flower_count + (kind === "flower" ? 1 : 0),
             egg_count: current.egg_count + (kind === "egg" ? 1 : 0),
-          },
-        };
+          };
+        });
+        return next;
       });
-      window.dispatchEvent(new CustomEvent("cloud-lab:interaction-effect", { detail: { memberId, kind } }));
+      memberIds.forEach((memberId) => {
+        window.dispatchEvent(new CustomEvent("cloud-lab:interaction-effect", { detail: { memberId, kind } }));
+      });
       Toast.show({
         icon: "success",
-        content: kind === "flower" ? "鲜花已送出" : kind === "egg" ? "鸡蛋已丢出" : kind === "throw" ? "已扔飞" : kind === "hammer" ? "锤子已砸下" : "已抽成忙碌",
+        content: kind === "flower" ? "鲜花已送出" : kind === "egg" ? "鸡蛋已丢出" : kind === "throw" ? "已扔飞" : kind === "hammer" ? "锤子已砸下" : kind === "water" ? `大桶水泼中 ${memberIds.length} 人` : "已抽成忙碌",
       });
     } catch {
       Toast.show({ icon: "fail", content: "互动失败" });
@@ -5184,8 +5405,10 @@ const CloudLabPage = () => {
             selectedId={selectedId}
             activeInteractionTool={activeInteractionTool}
             onUseInteractionTool={sendLabInteraction}
+            onOpenSnakeGame={() => setSnakeGameOpen(true)}
             onSelectMember={handleSelectMember}
           />
+          {snakeGameOpen ? <SnakeGameOverlay onClose={() => setSnakeGameOpen(false)} /> : null}
           <div className="cloud-lab-view-hint">
             点击画面后用 WASD 平移 · 最近半小时群聊 · 点击成员查看状态和任务
           </div>

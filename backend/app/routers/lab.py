@@ -28,7 +28,7 @@ ResourceStatus = Literal["available", "occupied", "maintenance", "disabled", "re
 ReservationStatus = Literal["pending", "approved", "rejected", "cancelled", "completed"]
 OccupancyStatus = Literal["present", "working", "meeting", "class", "away", "leave", "offline", "reserved"]
 OccupancySource = Literal["manual", "calendar", "class", "leave", "reservation", "device", "system"]
-InteractionKind = Literal["flower", "egg", "throw", "hammer", "whip"]
+InteractionKind = Literal["flower", "egg", "throw", "hammer", "whip", "water"]
 
 
 def _is_lab_manager(member: Member) -> bool:
