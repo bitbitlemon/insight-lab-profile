@@ -100,6 +100,16 @@ const cloudLabStyles = `
     width: 100%;
     text-align: left;
   }
+  .cloud-lab-tool-icon {
+    display: inline-flex;
+    width: 18px;
+    height: 18px;
+    align-items: center;
+    justify-content: center;
+    margin-right: 6px;
+    font-size: 15px;
+    vertical-align: -2px;
+  }
   .cloud-lab-view-hint {
     position: absolute;
     left: 18px;
@@ -829,6 +839,47 @@ const cloudLabStyles = `
 `;
 
 const emojiAsset = (name: string) => `/emojis/${name}.png`;
+
+const interactionToolIcons: Record<InteractionTool, string> = {
+  flower: "🌹",
+  egg: "🥚",
+  hammer: "🔨",
+  whip: "〰",
+  throw: "↗",
+};
+
+const makeInteractionTexture = (kind: InteractionTool) => {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (kind === "whip") {
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#7c2d12";
+    ctx.lineWidth = 12;
+    ctx.beginPath();
+    ctx.moveTo(24, 86);
+    ctx.bezierCurveTo(48, 24, 92, 108, 108, 36);
+    ctx.stroke();
+    ctx.strokeStyle = "#111827";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(16, 96);
+    ctx.lineTo(36, 78);
+    ctx.stroke();
+  } else {
+    ctx.font = kind === "throw" ? "800 66px Arial" : "76px Arial";
+    ctx.fillText(interactionToolIcons[kind], 64, 66);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+};
 
 const makeMat = (color: number, roughness = 0.9) =>
   new THREE.MeshStandardMaterial({ color, roughness, metalness: 0.02 });
@@ -2684,6 +2735,16 @@ const LabScene = ({
         routeAttempt: 0,
       };
     });
+    type InteractionSceneEffect = {
+      kind: InteractionTool;
+      sprite: THREE.Sprite;
+      startAt: number;
+      duration: number;
+      from: THREE.Vector3;
+      to: THREE.Vector3;
+      spin: number;
+    };
+    const interactionEffects: InteractionSceneEffect[] = [];
     const draggableRaycastTargets = draggableObjects.map((item) => item.object);
     const agentRaycastTargets = agents.map((agent) => agent.rig.group);
     const moveVector = new THREE.Vector3();
@@ -2897,14 +2958,41 @@ const LabScene = ({
       agent.holdUntil = now + 2.15;
       showAgentEmoji(agent, "fendou", 2.2);
     };
+    const spawnInteractionSprite = (kind: InteractionTool, to: THREE.Vector3, options?: { from?: THREE.Vector3; duration?: number; scale?: number; spin?: number }) => {
+      const texture = makeInteractionTexture(kind);
+      const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+      const sprite = new THREE.Sprite(material);
+      const from = options?.from || to.clone().add(new THREE.Vector3(-2.1, 2.1, 1.2));
+      const scale = options?.scale || 0.78;
+      sprite.position.copy(from);
+      sprite.scale.set(scale, scale, 1);
+      scene.add(sprite);
+      interactionEffects.push({
+        kind,
+        sprite,
+        startAt: clock.elapsedTime,
+        duration: options?.duration || 0.68,
+        from,
+        to,
+        spin: options?.spin ?? 7.2,
+      });
+    };
     const playInteractionEffect = (memberId: string, kind: InteractionTool) => {
       const agent = agentByMemberId(memberId);
       if (!agent) return;
+      const target = agent.rig.group.position.clone().add(new THREE.Vector3(0, 1.2, 0));
       if (kind === "throw") {
+        spawnInteractionSprite("throw", target.clone().add(new THREE.Vector3(0, 1.3, 0)), { duration: 0.48, scale: 0.62, spin: 3.4 });
         launchAgent(memberId);
         return;
       }
       if (kind === "hammer") {
+        spawnInteractionSprite("hammer", target.clone().add(new THREE.Vector3(0, 0.22, 0)), {
+          from: target.clone().add(new THREE.Vector3(0.15, 2.45, 0.05)),
+          duration: 0.44,
+          scale: 0.9,
+          spin: 11,
+        });
         showAgentEmoji(agent, "fendou", 2.1);
         agent.state = "running";
         agent.holdUntil = clock.elapsedTime + 1.35;
@@ -2915,11 +3003,18 @@ const LabScene = ({
         return;
       }
       if (kind === "whip") {
+        spawnInteractionSprite("whip", target.clone().add(new THREE.Vector3(0.2, 0.25, 0)), {
+          from: target.clone().add(new THREE.Vector3(-0.9, 0.55, 0.2)),
+          duration: 0.5,
+          scale: 1.05,
+          spin: 5,
+        });
         showAgentEmoji(agent, "bisheng", 2.8);
         agent.state = "working";
         agent.holdUntil = clock.elapsedTime + 8;
         return;
       }
+      spawnInteractionSprite(kind, target, { duration: kind === "egg" ? 0.54 : 0.72, scale: kind === "egg" ? 0.72 : 0.8, spin: kind === "egg" ? 13 : 5 });
       showAgentEmoji(agent, kind === "flower" ? "xiao" : "fendou", 2.4);
     };
     const xzDistance = (left: THREE.Vector3, right: THREE.Vector3) => Math.hypot(left.x - right.x, left.z - right.z);
@@ -3215,6 +3310,24 @@ const LabScene = ({
         paintMonitorFrame(surface, now);
         surface.texture.needsUpdate = true;
       });
+      for (let index = interactionEffects.length - 1; index >= 0; index -= 1) {
+        const effect = interactionEffects[index];
+        const progress = Math.min(1, (now - effect.startAt) / effect.duration);
+        const eased = 1 - Math.pow(1 - progress, 2);
+        effect.sprite.position.lerpVectors(effect.from, effect.to, eased);
+        effect.sprite.position.y += Math.sin(progress * Math.PI) * (effect.kind === "hammer" || effect.kind === "whip" ? 0.18 : 0.62);
+        effect.sprite.material.opacity = progress > 0.78 ? Math.max(0, 1 - (progress - 0.78) / 0.22) : 1;
+        effect.sprite.rotation.z += delta * effect.spin;
+        const pulse = effect.kind === "whip" ? 1 + Math.sin(progress * Math.PI) * 0.38 : 1 + Math.sin(progress * Math.PI) * 0.16;
+        effect.sprite.scale.setScalar((effect.kind === "hammer" ? 0.9 : effect.kind === "whip" ? 1.05 : 0.78) * pulse);
+        if (progress >= 1) {
+          scene.remove(effect.sprite);
+          const material = effect.sprite.material as THREE.SpriteMaterial;
+          material.map?.dispose();
+          material.dispose();
+          interactionEffects.splice(index, 1);
+        }
+      }
       const currentSelectedId = selectedIdRef.current || null;
       refreshAvatarSnapshot(now);
       agents.forEach((agent) => {
@@ -3347,6 +3460,12 @@ const LabScene = ({
       window.removeEventListener("cloud-lab:interaction-effect", onThrowAgent);
       renderer.domElement.removeEventListener("webglcontextlost", onContextLost);
       renderer.domElement.removeEventListener("webglcontextrestored", onContextRestored);
+      interactionEffects.forEach((effect) => {
+        scene.remove(effect.sprite);
+        const material = effect.sprite.material as THREE.SpriteMaterial;
+        material.map?.dispose();
+        material.dispose();
+      });
       scene.traverse((object) => {
         const mesh = object as THREE.Mesh;
         mesh.geometry?.dispose();
@@ -3556,7 +3675,12 @@ const InteractionToolbox = ({
 }) => (
   <div className="cloud-lab-interaction-toolbox">
     <button type="button" className="cloud-lab-chip-button" data-active={open || Boolean(activeTool)} onClick={onToggle}>
-      {activeTool ? interactionTools.find((tool) => tool.kind === activeTool)?.label : "互动"} ▾
+      {activeTool ? (
+        <>
+          <span className="cloud-lab-tool-icon">{interactionToolIcons[activeTool]}</span>
+          {interactionTools.find((tool) => tool.kind === activeTool)?.label}
+        </>
+      ) : "互动"} ▾
     </button>
     {open ? (
       <div className="cloud-lab-interaction-menu">
@@ -3568,6 +3692,7 @@ const InteractionToolbox = ({
             data-active={activeTool === tool.kind}
             onClick={() => onSelectTool(activeTool === tool.kind ? null : tool.kind)}
           >
+            <span className="cloud-lab-tool-icon">{interactionToolIcons[tool.kind]}</span>
             {tool.label}
           </button>
         ))}
@@ -4941,9 +5066,6 @@ const CloudLabPage = () => {
           },
         };
       });
-      if (kind === "whip") {
-        setPresenceStatuses((prev) => ({ ...prev, [memberId]: "working" }));
-      }
       window.dispatchEvent(new CustomEvent("cloud-lab:interaction-effect", { detail: { memberId, kind } }));
       Toast.show({
         icon: "success",
