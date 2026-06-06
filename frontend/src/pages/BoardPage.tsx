@@ -55,11 +55,15 @@ const boardStyles = `
   .ops-tag-gray { background: #f2f3f5; color: #4e5969; }
   .ops-dept-list { display: grid; gap: 8px; }
   .ops-dept-card { border: 1px solid #f2f3f5; border-radius: 7px; background: #fff; padding: 9px; display: grid; gap: 6px; }
+  .ops-entry-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .ops-entry-card { border: 1px solid #dbeafe; border-radius: 8px; background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%); padding: 12px; text-align: left; cursor: pointer; display: grid; gap: 6px; }
+  .ops-entry-card strong { color: #1f2329; font-size: 14px; }
   .ops-ai-line { display: flex; gap: 7px; align-items: flex-start; font-size: 12px; line-height: 1.55; color: #1f2329; }
   .ops-dot { width: 6px; height: 6px; border-radius: 999px; background: #3370ff; margin-top: 7px; flex: 0 0 auto; }
   @media (max-width: 900px) {
     .ops-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .ops-two { grid-template-columns: 1fr; }
+    .ops-entry-grid { grid-template-columns: 1fr; }
     .ops-top { flex-direction: column; }
   }
 `;
@@ -318,6 +322,8 @@ const BoardPage = () => {
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
             <Button size="small" fill="outline" color="primary" onClick={loadBoard}>刷新</Button>
+            <Button size="small" fill="outline" color="primary" onClick={() => navigate("/admin/project-report")}>项目通报</Button>
+            <Button size="small" fill="outline" color="primary" onClick={() => navigate("/admin/usage")}>数据后台</Button>
             <Button size="small" color="primary" onClick={() => navigate("/projects")}>进入项目管理</Button>
           </div>
         </div>
@@ -336,6 +342,17 @@ const BoardPage = () => {
               <div className="ops-kpi-value">{loading ? <DotLoading /> : item.value}</div>
             </div>
           ))}
+        </div>
+
+        <div className="ops-entry-grid">
+          <button type="button" className="ops-entry-card" onClick={() => navigate("/admin/project-report")}>
+            <strong>项目通报</strong>
+            <span className="ops-muted">按部门和个人查看项目、任务、风险、会议和飞书消息。</span>
+          </button>
+          <button type="button" className="ops-entry-card" onClick={() => navigate("/admin/usage")}>
+            <strong>数据后台</strong>
+            <span className="ops-muted">查看云实验室在线人数、每日使用人数、互动数和小游戏榜单。</span>
+          </button>
         </div>
 
         <div className="ops-grid ops-two">
