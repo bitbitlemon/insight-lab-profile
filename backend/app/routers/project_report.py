@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -110,6 +110,8 @@ def _range(start: date | None, end: date | None, days: int) -> tuple[datetime, d
     start_day = start or (end_day - timedelta(days=max(1, days) - 1))
     if start_day > end_day:
         start_day, end_day = end_day, start_day
+    if (end_day - start_day).days + 1 > 180:
+        raise HTTPException(400, "date range cannot exceed 180 days")
     return (
         datetime.combine(start_day, time.min),
         datetime.combine(end_day, time.max),

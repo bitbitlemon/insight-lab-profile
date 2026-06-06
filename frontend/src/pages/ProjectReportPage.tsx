@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { Button, Card, Selector, Tabs } from "antd-mobile";
+import { Button, Card, Selector, Tabs, Toast } from "antd-mobile";
 import type { SelectorOption } from "antd-mobile/es/components/selector";
 import { useNavigate } from "react-router-dom";
 import { getProjectReportSummary, type ProjectReportSummary } from "../api/projectReport";
@@ -14,6 +14,20 @@ const rangeOptions: SelectorOption<number>[] = [
   { label: "14 天", value: 14 },
   { label: "30 天", value: 30 },
 ];
+
+type RangeMode = "preset" | "custom";
+
+const toDateInputValue = (value: Date) => {
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+};
+
+const defaultCustomRange = () => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 6);
+  return { start: toDateInputValue(start), end: toDateInputValue(end) };
+};
 
 const metricStyle: CSSProperties = {
   border: "1px solid rgba(229,231,235,0.92)",
@@ -86,16 +100,26 @@ const ProjectReportPage = () => {
   const navigate = useNavigate();
   const { me } = useAuth();
   const [days, setDays] = useState(7);
+  const [rangeMode, setRangeMode] = useState<RangeMode>("preset");
+  const [customRange, setCustomRange] = useState(() => defaultCustomRange());
   const [summary, setSummary] = useState<ProjectReportSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null);
 
-  const load = async (nextDays = days) => {
+  const load = async (options?: { days?: number; mode?: RangeMode; start?: string; end?: string }) => {
+    const mode = options?.mode || rangeMode;
+    const nextDays = options?.days || days;
+    const start = options?.start || customRange.start;
+    const end = options?.end || customRange.end;
     setLoading(true);
     setError("");
     try {
-      const data = await getProjectReportSummary({ days: nextDays });
+      const data = await getProjectReportSummary(
+        mode === "custom"
+          ? { start_date: start, end_date: end }
+          : { days: nextDays },
+      );
       setSummary(data);
       setSelectedDepartment((current) => current && data.departments.some((item) => item.department === current) ? current : data.departments[0]?.department || null);
     } catch {
@@ -112,8 +136,20 @@ const ProjectReportPage = () => {
       setError("没有项目通报权限");
       return;
     }
-    void load(days);
-  }, [me?.open_id, me?.role, days]);
+    void load();
+  }, [me?.open_id, me?.role, days, rangeMode]);
+
+  const applyCustomRange = () => {
+    const start = new Date(customRange.start);
+    const end = new Date(customRange.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      Toast.show({ icon: "fail", content: "请选择有效日期范围" });
+      return;
+    }
+    setRangeMode("custom");
+    Toast.show({ icon: "loading", content: "刷新中", duration: 500 });
+    void load({ mode: "custom", start: customRange.start, end: customRange.end });
+  };
 
   const filteredPeople = useMemo(
     () => (summary?.people || []).filter((row) => !selectedDepartment || row.department === selectedDepartment).slice(0, 80),
@@ -139,7 +175,7 @@ const ProjectReportPage = () => {
       <>
         <style>{reportStyles}</style>
         <div className="report-page">
-        <SectionError title={error} description="请确认当前账号是管理员或职员。" action={<Button size="small" onClick={() => load(days)}>重试</Button>} />
+        <SectionError title={error} description="请确认当前账号是管理员或职员。" action={<Button size="small" onClick={() => load()}>重试</Button>} />
         </div>
       </>
     );
@@ -161,10 +197,31 @@ const ProjectReportPage = () => {
         <div style={{ display: "grid", gap: 10 }}>
           <Selector
             options={rangeOptions}
-            value={[days]}
-            onChange={(value) => setDays(Number(value[0] || 7))}
+            value={rangeMode === "preset" ? [days] : []}
+            onChange={(value) => {
+              const next = Number(value[0] || 7);
+              setRangeMode("preset");
+              setDays(next);
+              Toast.show({ icon: "loading", content: "刷新中", duration: 500 });
+            }}
             multiple={false}
           />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <input
+              type="date"
+              value={customRange.start}
+              onChange={(event) => setCustomRange((prev) => ({ ...prev, start: event.target.value }))}
+              style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "6px 8px", color: colors.title, fontSize: 12, fontWeight: 800 }}
+            />
+            <span style={{ color: colors.muted, fontSize: 12, fontWeight: 800 }}>至</span>
+            <input
+              type="date"
+              value={customRange.end}
+              onChange={(event) => setCustomRange((prev) => ({ ...prev, end: event.target.value }))}
+              style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "6px 8px", color: colors.title, fontSize: 12, fontWeight: 800 }}
+            />
+            <Button size="mini" color={rangeMode === "custom" ? "primary" : "default"} onClick={applyCustomRange}>应用自定义</Button>
+          </div>
           <div style={{ color: colors.title, fontSize: 14, lineHeight: 1.7, fontWeight: 700 }}>{summary.briefing}</div>
         </div>
       </Card>
