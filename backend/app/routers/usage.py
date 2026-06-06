@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -133,11 +133,25 @@ def usage_heartbeat(
 @router.get("/admin/summary", response_model=UsageAdminSummaryRead)
 def usage_admin_summary(
     days: int = Query(14, ge=1, le=90),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
     viewer_window_seconds: int = Query(90, ge=30, le=600),
     db: Session = Depends(get_db),
     _: Member = Depends(require_role("admin", "staff")),
 ):
     now = datetime.utcnow()
+    if start_date or end_date:
+        range_end = end_date or now.date()
+        range_start = start_date or range_end
+        if range_start > range_end:
+            raise HTTPException(400, "start_date must be before or equal to end_date")
+        range_days = (range_end - range_start).days + 1
+        if range_days > 180:
+            raise HTTPException(400, "date range cannot exceed 180 days")
+    else:
+        range_end = now.date()
+        range_start = now.date() - timedelta(days=days - 1)
+        range_days = days
     viewer_cutoff = now - timedelta(seconds=viewer_window_seconds)
     viewer_rows = db.execute(
         select(AppPresence, Member)
@@ -155,18 +169,17 @@ def usage_admin_summary(
         for presence, member in viewer_rows
     ]
 
-    start_date = (now.date() - timedelta(days=days - 1))
     active_rows = dict(
         db.execute(
             select(AppUsageDaily.usage_date, func.count(func.distinct(AppUsageDaily.member_open_id)))
-            .where(AppUsageDaily.app_key == "app", AppUsageDaily.usage_date >= start_date)
+            .where(AppUsageDaily.app_key == "app", AppUsageDaily.usage_date >= range_start, AppUsageDaily.usage_date <= range_end)
             .group_by(AppUsageDaily.usage_date)
         ).all()
     )
     cloud_lab_rows = dict(
         db.execute(
             select(AppUsageDaily.usage_date, func.count(func.distinct(AppUsageDaily.member_open_id)))
-            .where(AppUsageDaily.app_key == "cloud-lab", AppUsageDaily.usage_date >= start_date)
+            .where(AppUsageDaily.app_key == "cloud-lab", AppUsageDaily.usage_date >= range_start, AppUsageDaily.usage_date <= range_end)
             .group_by(AppUsageDaily.usage_date)
         ).all()
     )
@@ -174,19 +187,22 @@ def usage_admin_summary(
         datetime.strptime(day, "%Y-%m-%d").date(): count
         for day, count in db.execute(
             select(func.date(LabInteraction.created_at), func.count())
-            .where(LabInteraction.created_at >= datetime.combine(start_date, datetime.min.time()))
+            .where(
+                LabInteraction.created_at >= datetime.combine(range_start, datetime.min.time()),
+                LabInteraction.created_at <= datetime.combine(range_end, datetime.max.time()),
+            )
             .group_by(func.date(LabInteraction.created_at))
         ).all()
         if day
     }
     daily_metrics = [
         DailyUsageMetricRead(
-            date=start_date + timedelta(days=index),
-            active_users=int(active_rows.get(start_date + timedelta(days=index), 0) or 0),
-            cloud_lab_users=int(cloud_lab_rows.get(start_date + timedelta(days=index), 0) or 0),
-            interactions=int(interaction_rows.get(start_date + timedelta(days=index), 0) or 0),
+            date=range_start + timedelta(days=index),
+            active_users=int(active_rows.get(range_start + timedelta(days=index), 0) or 0),
+            cloud_lab_users=int(cloud_lab_rows.get(range_start + timedelta(days=index), 0) or 0),
+            interactions=int(interaction_rows.get(range_start + timedelta(days=index), 0) or 0),
         )
-        for index in range(days)
+        for index in range(range_days)
     ]
 
     return UsageAdminSummaryRead(

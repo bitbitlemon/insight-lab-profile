@@ -30,19 +30,42 @@ const dayOptions: SelectorOption<number>[] = [
   { label: "30 天", value: 30 },
 ];
 
+type RangeMode = "preset" | "custom";
+
+const toDateInputValue = (value: Date) => {
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+};
+
+const defaultCustomRange = () => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 13);
+  return { start: toDateInputValue(start), end: toDateInputValue(end) };
+};
+
 const UsageDashboardPage = () => {
   const navigate = useNavigate();
   const { me } = useAuth();
   const [days, setDays] = useState(14);
+  const [rangeMode, setRangeMode] = useState<RangeMode>("preset");
+  const [customRange, setCustomRange] = useState(() => defaultCustomRange());
   const [summary, setSummary] = useState<UsageAdminSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = async (nextDays = days) => {
+  const load = async (options?: { days?: number; mode?: RangeMode; start?: string; end?: string }) => {
+    const mode = options?.mode || rangeMode;
+    const nextDays = options?.days || days;
+    const start = options?.start || customRange.start;
+    const end = options?.end || customRange.end;
     setLoading(true);
     setError("");
     try {
-      setSummary(await getUsageAdminSummary({ days: nextDays, viewer_window_seconds: 90 }));
+      const params = mode === "custom"
+        ? { start_date: start, end_date: end, viewer_window_seconds: 90 }
+        : { days: nextDays, viewer_window_seconds: 90 };
+      setSummary(await getUsageAdminSummary(params));
     } catch {
       setError("数据后台加载失败");
     } finally {
@@ -57,8 +80,20 @@ const UsageDashboardPage = () => {
       setError("没有数据后台权限");
       return;
     }
-    void load(days);
-  }, [me?.open_id, me?.role, days]);
+    void load();
+  }, [me?.open_id, me?.role, days, rangeMode]);
+
+  const applyCustomRange = () => {
+    const start = new Date(customRange.start);
+    const end = new Date(customRange.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      Toast.show({ icon: "fail", content: "请选择有效日期范围" });
+      return;
+    }
+    setRangeMode("custom");
+    Toast.show({ icon: "loading", content: "刷新中", duration: 500 });
+    void load({ mode: "custom", start: customRange.start, end: customRange.end });
+  };
 
   const totals = useMemo(() => {
     const rows = summary?.daily_metrics || [];
@@ -81,7 +116,7 @@ const UsageDashboardPage = () => {
         <SectionError
           title={error}
           description="请确认当前账号有后台权限，或稍后重试。"
-          action={<Button size="small" onClick={() => load(days)}>重试</Button>}
+          action={<Button size="small" onClick={() => load()}>重试</Button>}
         />
       </PageShell>
     );
@@ -142,16 +177,35 @@ const UsageDashboardPage = () => {
         title="每日趋势"
         style={{ marginTop: 12 }}
         extra={(
-          <Selector
-            options={dayOptions}
-            value={[days]}
-            onChange={(value) => {
-              const next = Number(value[0] || 14);
-              setDays(next);
-              Toast.show({ icon: "loading", content: "刷新中", duration: 500 });
-            }}
-            multiple={false}
-          />
+          <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
+            <Selector
+              options={dayOptions}
+              value={rangeMode === "preset" ? [days] : []}
+              onChange={(value) => {
+                const next = Number(value[0] || 14);
+                setRangeMode("preset");
+                setDays(next);
+                Toast.show({ icon: "loading", content: "刷新中", duration: 500 });
+              }}
+              multiple={false}
+            />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", justifyContent: "flex-end" }}>
+              <input
+                type="date"
+                value={customRange.start}
+                onChange={(event) => setCustomRange((prev) => ({ ...prev, start: event.target.value }))}
+                style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "5px 7px", color: colors.title, fontSize: 12, fontWeight: 700 }}
+              />
+              <span style={{ color: colors.muted, fontSize: 12 }}>至</span>
+              <input
+                type="date"
+                value={customRange.end}
+                onChange={(event) => setCustomRange((prev) => ({ ...prev, end: event.target.value }))}
+                style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "5px 7px", color: colors.title, fontSize: 12, fontWeight: 700 }}
+              />
+              <Button size="mini" color={rangeMode === "custom" ? "primary" : "default"} onClick={applyCustomRange}>应用</Button>
+            </div>
+          </div>
         )}
       >
         <div style={{ display: "grid", gap: 10 }}>

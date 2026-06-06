@@ -38,6 +38,8 @@ export const recordUsageHeartbeat = async (page: string): Promise<void> => {
 
 export const getUsageAdminSummary = async (params?: {
   days?: number;
+  start_date?: string;
+  end_date?: string;
   viewer_window_seconds?: number;
 }): Promise<UsageAdminSummary> => {
   const { data } = await api.get<UsageAdminSummary>("/usage/admin/summary", { params });
