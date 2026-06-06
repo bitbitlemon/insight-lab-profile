@@ -19,7 +19,7 @@ from .services.a_class_log import fetch_all as fetch_a_class_all
 from .middleware import BodySizeLimitMiddleware, SlowRequestLogMiddleware, limiter
 from sqlalchemy import text
 from .db import engine
-from .models import AIAssistantConfig, Contribution, ContributionComment, LabDailyReport, LabMessageConfig, LabOccupancy, LabReservation, LabResource, LabSpace, LarkUserStatus, ProjectLog, ProjectRelation
+from .models import AIAssistantConfig, Contribution, ContributionComment, LabDailyReport, LabInteraction, LabMessageConfig, LabOccupancy, LabReservation, LabResource, LabSpace, LarkUserStatus, ProjectLog, ProjectRelation
 
 _log = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI):
     LabResource.__table__.create(bind=engine, checkfirst=True)
     LabReservation.__table__.create(bind=engine, checkfirst=True)
     LabOccupancy.__table__.create(bind=engine, checkfirst=True)
+    LabInteraction.__table__.create(bind=engine, checkfirst=True)
     LabMessageConfig.__table__.create(bind=engine, checkfirst=True)
     LabDailyReport.__table__.create(bind=engine, checkfirst=True)
     with engine.begin() as conn:

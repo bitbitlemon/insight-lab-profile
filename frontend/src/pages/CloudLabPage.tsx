@@ -2,7 +2,7 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState, typ
 import * as THREE from "three";
 import { Button, Dialog, TextArea, Toast } from "antd-mobile";
 import { createCalendarEvent, getFreeBusy, listClassSchedules, listLarkUserStatuses, setLarkUserStatus, type BusySlot, type ClassSchedule, type LarkUserStatus } from "../api/calendar";
-import { getLabMessageConfig, listLabChatClusters, listLabCommonChats, saveLabMessageConfig, sendLabMentionMessage, type LabChatCluster, type LabMessageConfig, type LabVisibleChat } from "../api/lab";
+import { createLabInteraction, getLabMessageConfig, listLabChatClusters, listLabCommonChats, listLabInteractionSummary, saveLabMessageConfig, sendLabMentionMessage, type LabChatCluster, type LabInteractionKind, type LabInteractionSummary, type LabMessageConfig, type LabVisibleChat } from "../api/lab";
 import { getMemberWorkloads, listMembers } from "../api/members";
 import { createTask, updateTask } from "../api/tasks";
 import { useAuth } from "../hooks/useAuth";
@@ -1553,6 +1553,7 @@ type LabAvatar = {
   busySlots?: BusySlot[];
   classes?: ClassSchedule[];
   chatCluster?: LabChatCluster;
+  interactions?: LabInteractionSummary;
 };
 
 const fallbackAvatars: LabAvatar[] = [
@@ -2343,6 +2344,14 @@ const LabScene = ({
       lastPosition: THREE.Vector3;
       stuckSince: number;
       routeAttempt: number;
+      throwMotion?: {
+        startAt: number;
+        duration: number;
+        origin: THREE.Vector3;
+        apex: THREE.Vector3;
+        previousState: AgentState;
+        previousHoldUntil: number;
+      };
     };
 
     const buildRoute = (from: THREE.Vector3, to: THREE.Vector3, attempt = 0) => {
@@ -2682,6 +2691,7 @@ const LabScene = ({
     };
 
     const collisionWeight = (agent: RuntimeAgent) => {
+      if (agent.throwMotion) return 0;
       if (agent.lockedState || agent.chatTarget || agent.baseArea !== "workspace") return 0;
       if (agent.state === "walking") return 1;
       if (agent.state === "idle") return 0.72;
@@ -2818,6 +2828,29 @@ const LabScene = ({
       showAgentEmoji(agent, seededOffset(agent.phaseOffset, 121) > 0.5 ? "xiao" : "weixiao", 3.2);
       agent.state = "resting";
       agent.holdUntil = clock.elapsedTime + 3.2;
+    };
+    const launchAgent = (memberId: string) => {
+      const agent = agentByMemberId(memberId);
+      if (!agent) return;
+      const now = clock.elapsedTime;
+      const origin = agent.rig.group.position.clone();
+      const direction = new THREE.Vector3(
+        seededOffset(agent.phaseOffset, 151) > 0.5 ? 1 : -1,
+        0,
+        seededOffset(agent.phaseOffset, 157) > 0.5 ? 0.55 : -0.55,
+      ).normalize();
+      agent.throwMotion = {
+        startAt: now,
+        duration: 2.15,
+        origin,
+        apex: origin.clone().add(direction.multiplyScalar(4.2)).add(new THREE.Vector3(0, 0, -0.25)),
+        previousState: agent.state,
+        previousHoldUntil: agent.holdUntil,
+      };
+      agent.route = [];
+      agent.state = "running";
+      agent.holdUntil = now + 2.15;
+      showAgentEmoji(agent, "fendou", 2.2);
     };
     const xzDistance = (left: THREE.Vector3, right: THREE.Vector3) => Math.hypot(left.x - right.x, left.z - right.z);
     const resetDraggableHome = (object: THREE.Object3D) => {
@@ -3038,6 +3071,10 @@ const LabScene = ({
     const onKeyUp = (event: KeyboardEvent) => {
       pressedKeys.delete(event.key.toLowerCase());
     };
+    const onThrowAgent = (event: Event) => {
+      const memberId = (event as CustomEvent<{ memberId?: string }>).detail?.memberId;
+      if (memberId) launchAgent(memberId);
+    };
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("pointerup", onPointerUp);
@@ -3045,6 +3082,7 @@ const LabScene = ({
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("cloud-lab:throw-agent", onThrowAgent);
     const onContextLost = (event: Event) => {
       event.preventDefault();
       window.cancelAnimationFrame(raf);
@@ -3111,6 +3149,29 @@ const LabScene = ({
         const latestArea = latestAvatar?.area || agent.baseArea;
         if (latestStatus !== agent.status || latestArea !== agent.baseArea) {
           sendStatusTarget(agent, latestStatus, latestArea, now);
+        }
+        if (agent.throwMotion) {
+          const motion = agent.throwMotion;
+          const progress = Math.min(1, (now - motion.startAt) / motion.duration);
+          const outbound = progress <= 0.58;
+          const segmentProgress = outbound ? progress / 0.58 : (progress - 0.58) / 0.42;
+          const eased = 1 - Math.pow(1 - segmentProgress, 2);
+          const from = outbound ? motion.origin : motion.apex;
+          const to = outbound ? motion.apex : motion.origin;
+          agent.rig.group.position.lerpVectors(from, to, eased);
+          agent.rig.group.position.y = 0.04 + Math.sin(progress * Math.PI) * 2.6;
+          agent.rig.group.rotation.y += delta * 8.5;
+          agent.rig.group.rotation.z = Math.sin(progress * Math.PI * 2) * 0.45;
+          setAgentPose(agent.rig, "running", now + agent.phaseOffset);
+          agent.rig.group.scale.setScalar(isSelected ? 1.34 : 1.22);
+          if (progress >= 1) {
+            agent.rig.group.position.copy(motion.origin);
+            agent.rig.group.rotation.z = 0;
+            agent.throwMotion = undefined;
+            agent.state = motion.previousState;
+            agent.holdUntil = Math.max(now + 0.4, motion.previousHoldUntil);
+          }
+          return;
         }
         agent.rig.group.scale.setScalar(isSelected ? 1.3 : 1.18);
         if (now > agent.nextThoughtAt) {
@@ -3208,6 +3269,7 @@ const LabScene = ({
       renderer.domElement.removeEventListener("wheel", onWheel);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("cloud-lab:throw-agent", onThrowAgent);
       renderer.domElement.removeEventListener("webglcontextlost", onContextLost);
       renderer.domElement.removeEventListener("webglcontextrestored", onContextRestored);
       scene.traverse((object) => {
@@ -3625,6 +3687,7 @@ const MemberSheet = ({
   onCreateTask,
   onDragTask,
   onArrangeMeeting,
+  onSendInteraction,
   onSendGroupMessage,
   onSetStatus,
   messageDraft,
@@ -3634,6 +3697,7 @@ const MemberSheet = ({
   onSelectedChatChange,
   loadingCommonChats,
   sendingGroupMessage,
+  sendingInteractionKey,
   labMessageConfig,
   canEditStatus,
   canViewDetails,
@@ -3645,6 +3709,7 @@ const MemberSheet = ({
   onCreateTask: (memberId: string) => void;
   onDragTask: (task: MemberWorkloadTask) => void;
   onArrangeMeeting: (memberId: string) => void;
+  onSendInteraction: (memberId: string, kind: LabInteractionKind) => void;
   onSendGroupMessage: (memberId: string) => void;
   onSetStatus: (memberId: string, status: PresenceStatus) => void;
   messageDraft: string;
@@ -3654,6 +3719,7 @@ const MemberSheet = ({
   onSelectedChatChange: (value: string) => void;
   loadingCommonChats: boolean;
   sendingGroupMessage: boolean;
+  sendingInteractionKey: string | null;
   labMessageConfig: LabMessageConfig | null;
   canEditStatus: boolean;
   canViewDetails: boolean;
@@ -3662,12 +3728,15 @@ const MemberSheet = ({
   const summary = workload?.summary;
   const tone = workloadTone(summary?.capacity_score ?? 0);
   const tasks = workload?.tasks.slice(0, 7) || [];
+  const flowerCount = avatar.interactions?.flower_count ?? 0;
+  const eggCount = avatar.interactions?.egg_count ?? 0;
+  const interactionTitle = `鲜花 ${flowerCount} · 鸡蛋 ${eggCount}`;
 
   return (
     <div className="cloud-lab-member-sheet">
       <div className="cloud-lab-sheet-header">
         <div>
-          <div className="cloud-lab-member-name">{avatar.name}</div>
+          <div className="cloud-lab-member-name" title={interactionTitle}>{avatar.name}</div>
           <div className="cloud-lab-member-meta">
             {workload?.member.department || "未设置部门"} · {workload?.member.position || workload?.member.title || "研发成员"}
           </div>
@@ -3728,6 +3797,9 @@ const MemberSheet = ({
             <Button size="mini" fill="outline" onClick={() => onNavigateProjects(avatar.id)}>项目</Button>
             <Button size="mini" fill="outline" onClick={() => onCreateTask(avatar.id)}>派任务</Button>
             <Button size="mini" fill="outline" onClick={() => onArrangeMeeting(avatar.id)}>约会议</Button>
+            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:flower`} onClick={() => onSendInteraction(avatar.id, "flower")}>送鲜花</Button>
+            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:egg`} onClick={() => onSendInteraction(avatar.id, "egg")}>丢鸡蛋</Button>
+            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:throw`} onClick={() => onSendInteraction(avatar.id, "throw")}>扔飞</Button>
           </div>
           <div style={{ display: "grid", gap: 7, marginTop: 8 }}>
             <select
@@ -4004,6 +4076,8 @@ const CloudLabPage = () => {
   const [selectedMessageChatId, setSelectedMessageChatId] = useState("");
   const [loadingCommonChats, setLoadingCommonChats] = useState(false);
   const [sendingGroupMessage, setSendingGroupMessage] = useState(false);
+  const [sendingInteractionKey, setSendingInteractionKey] = useState<string | null>(null);
+  const [interactionSummary, setInteractionSummary] = useState<Record<string, LabInteractionSummary>>({});
   const [savingMessageConfig, setSavingMessageConfig] = useState(false);
   const [selectedDepartment, setSelectedDepartment] = useState<string | null>(
     me?.department || null,
@@ -4165,6 +4239,7 @@ const CloudLabPage = () => {
       setClassSchedules({});
       setLarkStatuses({});
       setChatClusters([]);
+      setInteractionSummary({});
       return;
     }
     const seq = loadSeqRef.current + 1;
@@ -4187,6 +4262,14 @@ const CloudLabPage = () => {
       })
       .catch(() => {
         if (loadSeqRef.current === seq) setLarkStatuses({});
+      });
+    listLabInteractionSummary(visibleIds)
+      .then((rows) => {
+        if (loadSeqRef.current !== seq) return;
+        setInteractionSummary(Object.fromEntries(rows.map((row) => [row.member_open_id, row])));
+      })
+      .catch(() => {
+        if (loadSeqRef.current === seq) setInteractionSummary({});
       });
     const refreshIds = new Set(options?.refresh ? visibleIds : options?.refreshMemberIds || []);
     refreshIds.forEach((openId) => {
@@ -4380,10 +4463,11 @@ const CloudLabPage = () => {
           focusActive,
           focusTaskId: focusActive ? focusSession?.taskId : undefined,
           chatCluster,
+          interactions: interactionSummary[member.open_id] || { member_open_id: member.open_id, flower_count: 0, egg_count: 0 },
           area: getAreaForStatus(presenceStatus, autoArea),
         };
       }),
-    [busySlots, chatClusterByMember, classSchedules, focusSession, larkStatuses, me?.open_id, members, presenceStatuses, workloads],
+    [busySlots, chatClusterByMember, classSchedules, focusSession, interactionSummary, larkStatuses, me?.open_id, members, presenceStatuses, workloads],
   );
   const visibleAvatars = useMemo(() => avatars.filter((avatar) => matchesFilter(avatar, filter)), [avatars, filter]);
   const stationAvatars = useMemo(() => {
@@ -4718,6 +4802,33 @@ const CloudLabPage = () => {
     }
   }, [labMessageConfig?.chat_id, memberMessageDraft, selectedMessageChatId]);
 
+  const sendLabInteraction = useCallback(async (memberId: string, kind: LabInteractionKind) => {
+    const key = `${memberId}:${kind}`;
+    setSendingInteractionKey(key);
+    try {
+      await createLabInteraction({ target_open_id: memberId, kind });
+      setInteractionSummary((prev) => {
+        const current = prev[memberId] || { member_open_id: memberId, flower_count: 0, egg_count: 0 };
+        return {
+          ...prev,
+          [memberId]: {
+            ...current,
+            flower_count: current.flower_count + (kind === "flower" ? 1 : 0),
+            egg_count: current.egg_count + (kind === "egg" ? 1 : 0),
+          },
+        };
+      });
+      if (kind === "throw") {
+        window.dispatchEvent(new CustomEvent("cloud-lab:throw-agent", { detail: { memberId } }));
+      }
+      Toast.show({ icon: "success", content: kind === "flower" ? "鲜花已送出" : kind === "egg" ? "鸡蛋已丢出" : "已扔飞" });
+    } catch {
+      Toast.show({ icon: "fail", content: "互动失败" });
+    } finally {
+      setSendingInteractionKey(null);
+    }
+  }, []);
+
   const closeFloatingPanels = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
     if (target?.closest(".cloud-lab-department-panel, .cloud-lab-member-sheet, .cloud-lab-area-strip, .cloud-lab-toolbar, .cloud-lab-message-config, .cloud-lab-availability-panel")) {
@@ -4857,6 +4968,7 @@ const CloudLabPage = () => {
               onCreateTask={(memberId) => navigate(`/tasks/new?assignee_open_id=${encodeURIComponent(memberId)}`)}
               onDragTask={setDraggingTask}
               onArrangeMeeting={arrangeQuickMeeting}
+              onSendInteraction={sendLabInteraction}
               onSendGroupMessage={sendGroupMentionFromLab}
               onSetStatus={handleSetPresenceStatus}
               messageDraft={memberMessageDraft}
@@ -4866,6 +4978,7 @@ const CloudLabPage = () => {
               onSelectedChatChange={setSelectedMessageChatId}
               loadingCommonChats={loadingCommonChats}
               sendingGroupMessage={sendingGroupMessage}
+              sendingInteractionKey={sendingInteractionKey}
               labMessageConfig={labMessageConfig}
               canEditStatus={Boolean(me?.open_id && (selectedAvatar.id === me.open_id || canManagePresenceStatuses))}
               canViewDetails={canViewMemberDetails}

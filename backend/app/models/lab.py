@@ -160,3 +160,22 @@ class LabOccupancy(Base):
     updated_by: Mapped[str | None] = mapped_column(ForeignKey("members.open_id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class LabInteraction(Base):
+    """云实验室成员互动: 鲜花 / 鸡蛋投递记录."""
+
+    __tablename__ = "lab_interactions"
+    __table_args__ = (
+        CheckConstraint("kind IN ('flower','egg','throw')", name="ck_lab_interactions_kind"),
+        Index("idx_lab_interactions_target", "target_open_id"),
+        Index("idx_lab_interactions_actor", "actor_open_id"),
+        Index("idx_lab_interactions_created", "created_at"),
+    )
+
+    interaction_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_open_id: Mapped[str] = mapped_column(ForeignKey("members.open_id"), nullable=False)
+    actor_open_id: Mapped[str] = mapped_column(ForeignKey("members.open_id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

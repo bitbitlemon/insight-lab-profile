@@ -18,7 +18,7 @@ from .calendar import CalendarEvent, ClassSchedule, LeaveRequest, LarkUserStatus
 from .paper_milestones import PaperMilestone, PIPELINE_STAGES, PIPELINE_STAGE_LABEL
 from .moments import MomentPost, MomentComment, MomentLike
 from .chat_intent_logs import ChatIntentLog
-from .lab import LabSpace, LabResource, LabReservation, LabOccupancy
+from .lab import LabSpace, LabResource, LabReservation, LabOccupancy, LabInteraction
 from .lab_message import LabMessageConfig
 from .lab_daily import LabDailyReport
 
@@ -61,6 +61,7 @@ __all__ = [
     "LabResource",
     "LabReservation",
     "LabOccupancy",
+    "LabInteraction",
     "LabMessageConfig",
     "LabDailyReport",
     "ChatIntentLog",

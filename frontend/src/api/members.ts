@@ -30,6 +30,27 @@ export const getMemberWorkloads = async (open_ids: string[]): Promise<Record<str
   return data;
 };
 
+export type LarkPeopleSyncSource = "ehr" | "contact" | "auto";
+
+export interface LarkPeopleSyncResult {
+  source: string;
+  total: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+  marked_left: number;
+  departments: number;
+  errors: string[];
+}
+
+export const syncLarkPeople = async (params?: {
+  source?: LarkPeopleSyncSource;
+  mark_missing_left?: boolean;
+}): Promise<LarkPeopleSyncResult> => {
+  const { data } = await api.post<LarkPeopleSyncResult>("/members/sync/lark-people", null, { params });
+  return data;
+};
+
 export type MemberUpdatePayload = Partial<Omit<Member, "department" | "position" | "title">> & {
   department?: string | null;
   position?: string | null;

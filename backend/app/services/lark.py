@@ -85,6 +85,68 @@ class LarkClient:
             json={"records": [{"fields": r} for r in records]},
         )
 
+    # ============ Contact / EHR ============
+    async def list_child_departments(
+        self,
+        department_id: str = "0",
+        *,
+        fetch_child: bool = False,
+        page_size: int = 50,
+        page_token: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "department_id_type": "open_department_id",
+            "user_id_type": "open_id",
+            "fetch_child": "true" if fetch_child else "false",
+            "page_size": page_size,
+        }
+        if page_token:
+            params["page_token"] = page_token
+        return await self._request(
+            "GET",
+            f"/contact/v3/departments/{department_id}/children",
+            params=params,
+        )
+
+    async def list_department_users(
+        self,
+        department_id: str,
+        *,
+        page_size: int = 50,
+        page_token: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "department_id": department_id,
+            "department_id_type": "open_department_id",
+            "user_id_type": "open_id",
+            "page_size": page_size,
+        }
+        if page_token:
+            params["page_token"] = page_token
+        return await self._request("GET", "/contact/v3/users/find_by_department", params=params)
+
+    async def list_ehr_employees(
+        self,
+        *,
+        view: str = "basic",
+        status: str | None = None,
+        employee_type: str | None = None,
+        page_size: int = 100,
+        page_token: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "view": view,
+            "user_id_type": "open_id",
+            "page_size": page_size,
+        }
+        if status:
+            params["status"] = status
+        if employee_type:
+            params["type"] = employee_type
+        if page_token:
+            params["page_token"] = page_token
+        return await self._request("GET", "/ehr/v1/employees", params=params)
+
     # ============ Drive Media (附件上传) ============
     async def upload_drive_media(
         self,

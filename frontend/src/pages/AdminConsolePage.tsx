@@ -26,7 +26,7 @@ import {
 } from "../api/admin";
 import { listAuditEntries, undoAuditEntry, type AuditEntry } from "../api/audit";
 import { listContributions, type Contribution } from "../api/contributions";
-import { createMember, deleteMember, listMembers, updateMember, type MemberCreatePayload } from "../api/members";
+import { createMember, deleteMember, listMembers, syncLarkPeople, updateMember, type MemberCreatePayload } from "../api/members";
 import {
   previewGrantPoints,
   previewIndustrialPoints,
@@ -1333,6 +1333,7 @@ const SyncTab = () => {
   const [states, setStates] = useState<SyncTableState[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncingPeople, setSyncingPeople] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -1371,13 +1372,40 @@ const SyncTab = () => {
     }
   };
 
+  const confirmPeopleSync = async () => {
+    const confirmed = await Dialog.confirm({
+      title: "导入飞书人事",
+      content: "将以飞书人事花名册为主同步成员姓名、部门、岗位、邮箱、手机和在职状态。默认不会把未返回的成员标为离职。",
+      confirmText: "开始导入",
+      cancelText: "取消",
+    });
+    if (!confirmed) return;
+    setSyncingPeople(true);
+    try {
+      const result = await syncLarkPeople({ source: "ehr" });
+      Toast.show({
+        icon: "success",
+        content: `导入完成：新增 ${result.created}，更新 ${result.updated}，不变 ${result.unchanged}`,
+      });
+    } catch (err) {
+      Toast.show({ icon: "fail", content: extractMessage(err) });
+    } finally {
+      setSyncingPeople(false);
+    }
+  };
+
   return (
     <div style={{ paddingTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <div style={{ color: colors.muted, fontSize: 12 }}>Base 同步状态</div>
-        <Button size="small" color="primary" loading={syncing} onClick={() => void confirmSync()}>
-          立即全量同步
-        </Button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <Button size="small" loading={syncingPeople} onClick={() => void confirmPeopleSync()}>
+            导入飞书人事
+          </Button>
+          <Button size="small" color="primary" loading={syncing} onClick={() => void confirmSync()}>
+            立即全量同步
+          </Button>
+        </div>
       </div>
       {loading ? <SectionLoading text="正在读取同步状态..." /> : null}
       {!loading && states.length === 0 ? <SectionEmpty description="暂无同步状态" /> : null}

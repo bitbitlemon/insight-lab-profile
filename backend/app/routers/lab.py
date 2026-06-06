@@ -8,12 +8,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import LabDailyReport, LabMessageConfig, LabOccupancy, LabReservation, LabResource, LabSpace, Member
+from app.models import LabDailyReport, LabInteraction, LabMessageConfig, LabOccupancy, LabReservation, LabResource, LabSpace, Member
 from app.schemas.common import PageResponse
 from app.services.lark_chat_sync import build_recent_chat_clusters, visible_chat_options
 from app.services.lark_daily_plan_sync import sync_daily_plan_base
@@ -28,6 +28,7 @@ ResourceStatus = Literal["available", "occupied", "maintenance", "disabled", "re
 ReservationStatus = Literal["pending", "approved", "rejected", "cancelled", "completed"]
 OccupancyStatus = Literal["present", "working", "meeting", "class", "away", "leave", "offline", "reserved"]
 OccupancySource = Literal["manual", "calendar", "class", "leave", "reservation", "device", "system"]
+InteractionKind = Literal["flower", "egg", "throw"]
 
 
 def _is_lab_manager(member: Member) -> bool:
@@ -247,6 +248,29 @@ class LabChatClusterRead(BaseModel):
     message_count: int = 0
     last_message_at: datetime | None = None
     thoughts: list[str] = Field(default_factory=list)
+
+
+class LabInteractionSummaryRead(BaseModel):
+    member_open_id: str
+    flower_count: int = 0
+    egg_count: int = 0
+
+
+class LabInteractionCreate(BaseModel):
+    target_open_id: str = Field(..., min_length=1)
+    kind: InteractionKind
+    note: str | None = Field(None, max_length=240)
+
+
+class LabInteractionRead(BaseModel):
+    interaction_id: int
+    target_open_id: str
+    actor_open_id: str
+    kind: InteractionKind
+    note: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class LabDailyReportRead(BaseModel):
@@ -579,6 +603,64 @@ def get_lab_overview(db: Session = Depends(get_db), current: Member = Depends(ge
         active_occupancy=db.execute(select(func.count()).select_from(LabOccupancy).where(active_occupancy_filter)).scalar_one(),
         occupied_member_count=occupied_member_count,
     )
+
+
+@router.get("/interactions/summary", response_model=list[LabInteractionSummaryRead])
+def list_lab_interaction_summary(
+    member_open_ids: str | None = Query(None, description="逗号分隔 open_id; 空则返回全部有互动的成员"),
+    db: Session = Depends(get_db),
+    _: Member = Depends(get_current_user),
+):
+    requested = [item.strip() for item in (member_open_ids or "").split(",") if item.strip()]
+    stmt = (
+        select(
+            LabInteraction.target_open_id,
+            func.sum(case((LabInteraction.kind == "flower", 1), else_=0)).label("flower_count"),
+            func.sum(case((LabInteraction.kind == "egg", 1), else_=0)).label("egg_count"),
+        )
+        .group_by(LabInteraction.target_open_id)
+    )
+    if requested:
+        stmt = stmt.where(LabInteraction.target_open_id.in_(requested[:500]))
+    rows = db.execute(stmt).all()
+    by_member = {
+        member_open_id: LabInteractionSummaryRead(
+            member_open_id=member_open_id,
+            flower_count=int(flower_count or 0),
+            egg_count=int(egg_count or 0),
+        )
+        for member_open_id, flower_count, egg_count in rows
+    }
+    if requested:
+        return [
+            by_member.get(
+                member_id,
+                LabInteractionSummaryRead(member_open_id=member_id, flower_count=0, egg_count=0),
+            )
+            for member_id in requested[:500]
+        ]
+    return list(by_member.values())
+
+
+@router.post("/interactions", response_model=LabInteractionRead, status_code=status.HTTP_201_CREATED)
+def create_lab_interaction(
+    payload: LabInteractionCreate,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_user),
+):
+    target = db.get(Member, payload.target_open_id)
+    if not target:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "target member not found")
+    row = LabInteraction(
+        target_open_id=target.open_id,
+        actor_open_id=current.open_id,
+        kind=payload.kind,
+        note=payload.note.strip() if payload.note else None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 @router.get("/chat-clusters", response_model=list[LabChatClusterRead])

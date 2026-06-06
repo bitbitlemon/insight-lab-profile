@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     lark_table_projects: str = ""
     lark_table_tasks: str = ""
     lark_table_paper_milestones: str = ""
+    lark_people_sync_default_source: str = "ehr"  # ehr | contact | auto
+    lark_ehr_employee_status: str = "2"           # 飞书人事标准版: 默认只同步在职员工; 置空则不过滤
+    lark_ehr_employee_type: str = ""              # 可选: 员工类型过滤
+    lark_people_sync_mark_missing_left: bool = False
     lark_schedule_base_app_token: str = "QvVVbiCMLaCFRQscVdScbHdMnhe"
     lark_schedule_table_id: str = "tblZOAqSV1HsVg01"
     lark_schedule_view_id: str = "vewaaW2Ufo"

@@ -8,6 +8,7 @@ export type LabResourceStatus = "available" | "occupied" | "maintenance" | "disa
 export type LabReservationStatus = "pending" | "approved" | "rejected" | "cancelled" | "completed";
 export type LabOccupancyStatus = "present" | "working" | "meeting" | "class" | "away" | "leave" | "offline" | "reserved";
 export type LabOccupancySource = "manual" | "calendar" | "class" | "leave" | "reservation" | "device" | "system";
+export type LabInteractionKind = "flower" | "egg" | "throw";
 
 export interface LabSpace {
   space_id: number;
@@ -157,6 +158,21 @@ export interface LabVisibleChat {
   chat_name: string;
   member_count: number;
   updated_at: string | null;
+}
+
+export interface LabInteractionSummary {
+  member_open_id: string;
+  flower_count: number;
+  egg_count: number;
+}
+
+export interface LabInteraction {
+  interaction_id: number;
+  target_open_id: string;
+  actor_open_id: string;
+  kind: LabInteractionKind;
+  note: string | null;
+  created_at: string;
 }
 
 export type LabSpacePayload = Partial<Omit<LabSpace, "space_id" | "created_by" | "created_at" | "updated_at">> & {
@@ -312,6 +328,22 @@ export const listLabDailyReports = async (params?: {
 
 export const getLabOverview = async (): Promise<LabOverview> => {
   const { data } = await api.get<LabOverview>("/lab/overview");
+  return data;
+};
+
+export const listLabInteractionSummary = async (memberOpenIds?: string[]): Promise<LabInteractionSummary[]> => {
+  const { data } = await api.get<LabInteractionSummary[]>("/lab/interactions/summary", {
+    params: memberOpenIds?.length ? { member_open_ids: memberOpenIds.join(",") } : undefined,
+  });
+  return data;
+};
+
+export const createLabInteraction = async (payload: {
+  target_open_id: string;
+  kind: LabInteractionKind;
+  note?: string | null;
+}): Promise<LabInteraction> => {
+  const { data } = await api.post<LabInteraction>("/lab/interactions", payload);
   return data;
 };
 

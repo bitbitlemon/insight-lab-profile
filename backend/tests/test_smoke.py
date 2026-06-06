@@ -1,4 +1,5 @@
 """smoke: health / JWT refresh / awards / audit / paper_authors + v3 积分路由 + 规则."""
+import asyncio
 import json
 from datetime import date, datetime, time, timedelta
 
@@ -96,6 +97,85 @@ def test_paper_authors_add_and_remove(client, admin_user, db_session):
     r = client.delete(f"/api/papers/{p.paper_id}/authors/{pa_id}")
     assert r.status_code == 204
     assert db_session.get(PaperAuthor, pa_id) is None
+
+
+def test_lark_people_sync_from_ehr(db_session, monkeypatch):
+    from app.services import lark_people_sync
+
+    class FakeLark:
+        async def list_child_departments(self, department_id="0", **kwargs):
+            return {
+                "items": [
+                    {"open_department_id": "od_lab", "name": "智能实验室"},
+                ],
+                "has_more": False,
+            }
+
+        async def list_ehr_employees(self, **kwargs):
+            return {
+                "items": [
+                    {
+                        "user_id": "ou_people_sync",
+                        "system_fields": {
+                            "name": "飞书人事成员",
+                            "en_name": "People Sync",
+                            "email": "people@example.com",
+                            "mobile": "13800000000",
+                            "department_id": "od_lab",
+                            "job": {"name": "研究助理"},
+                            "job_level": {"name": "硕士"},
+                            "employee_no": "E001",
+                            "hire_date": "2026-06-01",
+                            "status": 2,
+                        },
+                    },
+                ],
+                "has_more": False,
+            }
+
+    monkeypatch.setattr(lark_people_sync, "get_lark", lambda: FakeLark(), raising=True)
+
+    result = asyncio.run(lark_people_sync.sync_people_from_lark(db_session, source="ehr"))
+    assert result["source"] == "ehr"
+    assert result["created"] == 1
+    member = db_session.get(Member, "ou_people_sync")
+    assert member is not None
+    assert member.name == "飞书人事成员"
+    assert member.department == "智能实验室"
+    assert member.position == "研究助理"
+    assert member.email == "people@example.com"
+    assert member.status == "active"
+
+
+def test_lab_interactions(client, admin_user, db_session):
+    target = Member(
+        open_id="test_lab_interaction_target",
+        name="互动目标",
+        role="student",
+        department="测试",
+        status="active",
+        privacy_level="internal",
+    )
+    db_session.merge(target)
+    db_session.commit()
+
+    r = client.get("/api/lab/interactions/summary", params={"member_open_ids": target.open_id})
+    assert r.status_code == 200, r.text
+    assert r.json() == [{"member_open_id": target.open_id, "flower_count": 0, "egg_count": 0}]
+
+    r = client.post("/api/lab/interactions", json={"target_open_id": target.open_id, "kind": "flower"})
+    assert r.status_code == 201, r.text
+    assert r.json()["actor_open_id"] == admin_user.open_id
+
+    r = client.post("/api/lab/interactions", json={"target_open_id": target.open_id, "kind": "egg"})
+    assert r.status_code == 201, r.text
+
+    r = client.post("/api/lab/interactions", json={"target_open_id": target.open_id, "kind": "throw"})
+    assert r.status_code == 201, r.text
+
+    r = client.get("/api/lab/interactions/summary", params={"member_open_ids": target.open_id})
+    assert r.status_code == 200, r.text
+    assert r.json() == [{"member_open_id": target.open_id, "flower_count": 1, "egg_count": 1}]
 
 
 def test_task_assignment_sends_lark_notification(client, admin_user, db_session, monkeypatch):

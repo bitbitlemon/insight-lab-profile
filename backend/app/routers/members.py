@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, require_admin
 from app.models import Member, Project, Task
 from app.schemas.common import PageResponse
 from app.schemas.members import MemberCreate, MemberRead, MemberUpdate
+from app.services.lark_people_sync import sync_people_from_lark
 from app.services.sync import push_record_to_base
 
 router = APIRouter(prefix="/api/members", tags=["members"])
@@ -226,6 +227,25 @@ def get_member_workloads(
         for open_id in requested_ids
         if (member := member_by_id.get(open_id)) is not None
     }
+
+
+@router.post("/sync/lark-people")
+async def sync_lark_people(
+    source: str | None = Query(None, pattern="^(ehr|contact|auto)$"),
+    mark_missing_left: bool | None = Query(None),
+    db: Session = Depends(get_db),
+    _: Member = Depends(require_admin),
+):
+    """按飞书人事/通讯录导入组织人员到本地 members。
+
+    默认 source=ehr, 即以飞书人事标准版花名册为主；source=auto 时飞书人事失败会降级到通讯录。
+    mark_missing_left 默认跟随配置, 默认 False, 避免应用通讯录权限范围不完整时误标离职。
+    """
+    try:
+        return await sync_people_from_lark(db, source=source, mark_missing_left=mark_missing_left)
+    except Exception as exc:
+        log.exception("lark people sync failed")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"failed to sync lark people: {exc}") from exc
 
 
 @router.get("/{open_id}", response_model=MemberRead)
