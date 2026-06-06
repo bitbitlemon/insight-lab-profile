@@ -5,6 +5,7 @@ import { createCalendarEvent, getFreeBusy, listClassSchedules, listLarkUserStatu
 import { createLabInteraction, getLabMessageConfig, listLabChatClusters, listLabCommonChats, listLabInteractionSummary, saveLabMessageConfig, sendLabMentionMessage, type LabChatCluster, type LabInteractionKind, type LabInteractionSummary, type LabMessageConfig, type LabVisibleChat } from "../api/lab";
 import { getMemberWorkloads, listMembers } from "../api/members";
 import { createTask, updateTask } from "../api/tasks";
+import { listSnakeScores, submitSnakeScore, type SnakeScore } from "../api/usage";
 import { useAuth } from "../hooks/useAuth";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { Member, MemberWorkload, MemberWorkloadTask } from "../types/api";
@@ -167,6 +168,26 @@ const cloudLabStyles = `
     justify-content: center;
     gap: 6px;
     margin-top: 10px;
+  }
+  .cloud-lab-snake-leaderboard {
+    margin-top: 10px;
+    display: grid;
+    gap: 5px;
+    max-height: 112px;
+    overflow: auto;
+    border-top: 1px solid rgba(148,163,184,0.28);
+    padding-top: 8px;
+  }
+  .cloud-lab-snake-rank {
+    display: grid;
+    grid-template-columns: 28px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    color: #cbd5e1;
+    font-size: 12px;
+  }
+  .cloud-lab-snake-rank strong {
+    color: #facc15;
   }
   .cloud-lab-view-hint {
     position: absolute;
@@ -3906,8 +3927,11 @@ const SnakeGameOverlay = ({ onClose }: { onClose: () => void }) => {
   const [snake, setSnake] = useState([{ x: 8, y: 9 }, { x: 7, y: 9 }, { x: 6, y: 9 }]);
   const [food, setFood] = useState({ x: 13, y: 9 });
   const [score, setScore] = useState(0);
+  const [leaderboard, setLeaderboard] = useState<SnakeScore[]>([]);
   const [gameOver, setGameOver] = useState(false);
   const directionRef = useRef<SnakeDirection>("right");
+  const startedAtRef = useRef(Date.now());
+  const submittedScoreRef = useRef<number | null>(null);
 
   const placeFood = useCallback((body: Array<{ x: number; y: number }>) => {
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -3935,6 +3959,16 @@ const SnakeGameOverlay = ({ onClose }: { onClose: () => void }) => {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, setDirection]);
 
+  const refreshLeaderboard = useCallback(() => {
+    listSnakeScores(8)
+      .then(setLeaderboard)
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    refreshLeaderboard();
+  }, [refreshLeaderboard]);
+
   useEffect(() => {
     if (gameOver) return undefined;
     const timer = window.setInterval(() => {
@@ -3961,8 +3995,22 @@ const SnakeGameOverlay = ({ onClose }: { onClose: () => void }) => {
     return () => window.clearInterval(timer);
   }, [food, gameOver, placeFood]);
 
+  useEffect(() => {
+    if (!gameOver || submittedScoreRef.current === score) return;
+    submittedScoreRef.current = score;
+    if (score <= 0) return;
+    submitSnakeScore({
+      score,
+      duration_seconds: Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000)),
+    })
+      .then(refreshLeaderboard)
+      .catch(() => undefined);
+  }, [gameOver, refreshLeaderboard, score]);
+
   const restart = () => {
     directionRef.current = "right";
+    startedAtRef.current = Date.now();
+    submittedScoreRef.current = null;
     setSnake([{ x: 8, y: 9 }, { x: 7, y: 9 }, { x: 6, y: 9 }]);
     setFood({ x: 13, y: 9 });
     setScore(0);
@@ -3997,6 +4045,17 @@ const SnakeGameOverlay = ({ onClose }: { onClose: () => void }) => {
           <button type="button" className="cloud-lab-chip-button" onClick={() => setDirection("right")}>→</button>
         </div>
         {gameOver ? <div className="cloud-lab-member-meta" style={{ marginTop: 8, color: "#fecaca" }}>游戏结束</div> : null}
+        <div className="cloud-lab-snake-leaderboard">
+          {leaderboard.length ? leaderboard.map((item, index) => (
+            <div key={item.score_id} className="cloud-lab-snake-rank">
+              <strong>#{index + 1}</strong>
+              <span>{item.member_name}</span>
+              <strong>{item.score}</strong>
+            </div>
+          )) : (
+            <div className="cloud-lab-member-meta" style={{ color: "#94a3b8" }}>暂无排行榜</div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1575,22 +1575,25 @@ const AdminConsolePage = () => {
           }}
         >
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <button
-              type="button"
-              onClick={() => navigate("/")}
-              style={{
-                alignSelf: "flex-start",
-                border: "none",
-                background: "transparent",
-                padding: 0,
-                color: colors.primaryDeep,
-                fontSize: 13,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              ← 返回首页
-            </button>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => navigate("/")}
+                style={{
+                  alignSelf: "flex-start",
+                  border: "none",
+                  background: "transparent",
+                  padding: 0,
+                  color: colors.primaryDeep,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                ← 返回首页
+              </button>
+              <Button size="small" onClick={() => navigate("/admin/usage")}>数据后台</Button>
+            </div>
             <div style={{ fontSize: 26, fontWeight: 800, color: colors.title }}>Admin 审批中台</div>
             <div style={{ color: colors.muted, fontSize: 13, lineHeight: 1.7 }}>
               统一处理积分录入、成员维护、积分审核、申诉终裁、活动等级升级、比赛分配双审与治理工具

@@ -28,6 +28,7 @@ const CalendarPage = lazy(() => import("./pages/CalendarPage"));
 const MeetingFormPage = lazy(() => import("./pages/MeetingFormPage"));
 const MeetingNotesPage = lazy(() => import("./pages/MeetingNotesPage"));
 const AdminConsolePage = lazy(() => import("./pages/AdminConsolePage"));
+const UsageDashboardPage = lazy(() => import("./pages/UsageDashboardPage"));
 const MomentsPage = lazy(() => import("./pages/MomentsPage"));
 const FileConfirmPage = lazy(() => import("./pages/FileConfirmPage"));
 const NotificationReceiptPage = lazy(() => import("./pages/NotificationReceiptPage"));
@@ -66,6 +67,7 @@ export const routes: RouteObject[] = [
   { path: "/cloud-lab", element: <CloudLabPage /> },
   { path: "/board/leaderboard", element: <LeaderboardPage /> },
   { path: "/admin", element: <AdminConsolePage /> },
+  { path: "/admin/usage", element: <UsageDashboardPage /> },
   { path: "/members/:open_id", element: <MemberDetailPage /> },
   { path: "/files/confirm", element: <FileConfirmPage /> },
   { path: "/notifications/receipt", element: <NotificationReceiptPage /> },

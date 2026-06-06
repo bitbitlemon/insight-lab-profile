@@ -21,6 +21,7 @@ from .chat_intent_logs import ChatIntentLog
 from .lab import LabSpace, LabResource, LabReservation, LabOccupancy, LabInteraction
 from .lab_message import LabMessageConfig
 from .lab_daily import LabDailyReport
+from .usage import AppPresence, AppUsageDaily, SnakeScore
 
 __all__ = [
     "Member",
@@ -65,4 +66,7 @@ __all__ = [
     "LabMessageConfig",
     "LabDailyReport",
     "ChatIntentLog",
+    "AppPresence",
+    "AppUsageDaily",
+    "SnakeScore",
 ]
