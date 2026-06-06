@@ -101,6 +101,50 @@ const cloudLabStyles = `
     width: 100%;
     text-align: left;
   }
+  .cloud-lab-find-game-panel {
+    position: absolute;
+    left: 50%;
+    top: 18px;
+    transform: translateX(-50%);
+    min-width: min(420px, calc(100vw - 24px));
+    z-index: 5;
+    pointer-events: none;
+    font-family: Arial, sans-serif;
+  }
+  .cloud-lab-find-game-card {
+    pointer-events: auto;
+    display: grid;
+    gap: 8px;
+    border: 1px solid rgba(20,184,166,0.26);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.9);
+    box-shadow: 0 14px 32px rgba(15,23,42,0.12);
+    backdrop-filter: blur(12px);
+    padding: 10px 12px;
+    color: #0f172a;
+  }
+  .cloud-lab-find-game-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    font-weight: 900;
+  }
+  .cloud-lab-find-game-target {
+    font-size: 20px;
+    font-weight: 950;
+    color: #0f766e;
+    line-height: 1.2;
+  }
+  .cloud-lab-find-game-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 800;
+  }
   .cloud-lab-tool-icon {
     display: inline-flex;
     width: 18px;
@@ -926,6 +970,8 @@ const interactionToolIcons: Record<InteractionTool, string> = {
   whip: "〰",
   water: "🪣",
   throw: "↗",
+  paper_airplane: "✈",
+  firework: "🎆",
 };
 
 const makeInteractionTexture = (kind: InteractionTool) => {
@@ -953,7 +999,7 @@ const makeInteractionTexture = (kind: InteractionTool) => {
     ctx.lineTo(36, 78);
     ctx.stroke();
   } else {
-    ctx.font = kind === "throw" ? "800 66px Arial" : "76px Arial";
+    ctx.font = kind === "throw" || kind === "paper_airplane" ? "800 66px Arial" : "76px Arial";
     ctx.fillText(interactionToolIcons[kind], 64, 66);
   }
   const texture = new THREE.CanvasTexture(canvas);
@@ -3150,6 +3196,40 @@ const LabScene = ({
         agent.holdUntil = clock.elapsedTime + 1.8;
         return;
       }
+      if (kind === "paper_airplane") {
+        spawnInteractionSprite("paper_airplane", target.clone().add(new THREE.Vector3(0.08, 0.2, 0)), {
+          from: target.clone().add(new THREE.Vector3(-3.2, 1.55, 1.85)),
+          duration: 0.92,
+          scale: 0.62,
+          spin: 2.2,
+        });
+        const label = createTextSprite("收到纸飞机", true);
+        label.position.copy(target).add(new THREE.Vector3(0, 0.86, 0));
+        label.scale.set(1.08, 0.34, 1);
+        scene.add(label);
+        window.setTimeout(() => {
+          scene.remove(label);
+          const material = label.material as THREE.SpriteMaterial;
+          material.map?.dispose();
+          material.dispose();
+        }, 1500);
+        showAgentEmoji(agent, "lingguangyishan", 2.4);
+        return;
+      }
+      if (kind === "firework") {
+        for (let index = 0; index < 12; index += 1) {
+          const angle = (Math.PI * 2 * index) / 12;
+          const radius = 0.35 + Math.random() * 0.75;
+          spawnInteractionSprite("firework", target.clone().add(new THREE.Vector3(Math.cos(angle) * radius, 0.45 + Math.random() * 0.9, Math.sin(angle) * radius)), {
+            from: target.clone().add(new THREE.Vector3(0, 0.15, 0)),
+            duration: 0.5 + Math.random() * 0.22,
+            scale: 0.24 + Math.random() * 0.18,
+            spin: 10 + Math.random() * 10,
+          });
+        }
+        showAgentEmoji(agent, "xiao", 2.1);
+        return;
+      }
       spawnInteractionSprite(kind, target, { duration: kind === "egg" ? 0.54 : 0.72, scale: kind === "egg" ? 0.72 : 0.8, spin: kind === "egg" ? 13 : 5 });
       showAgentEmoji(agent, kind === "flower" ? "xiao" : "fendou", 2.4);
     };
@@ -3360,7 +3440,7 @@ const LabScene = ({
       if (memberId) {
         const tool = activeInteractionToolRef.current;
         if (tool) {
-          if (tool === "water") {
+          if (tool === "water" || tool === "firework") {
             const origin = agentByMemberId(memberId)?.rig.group.position;
             const targets = origin
               ? agents
@@ -3841,18 +3921,22 @@ const LabToolbar = ({
   departmentOpen,
   availabilityOpen,
   messageConfigOpen,
+  findGameActive,
   canConfigureMessages,
   onToggleDepartments,
   onToggleAvailability,
   onToggleMessageConfig,
+  onStartFindGame,
 }: {
   departmentOpen: boolean;
   availabilityOpen: boolean;
   messageConfigOpen: boolean;
+  findGameActive: boolean;
   canConfigureMessages: boolean;
   onToggleDepartments: () => void;
   onToggleAvailability: () => void;
   onToggleMessageConfig: () => void;
+  onStartFindGame: () => void;
 }) => (
   <div className="cloud-lab-toolbar">
     <button type="button" className="cloud-lab-chip-button" data-active={departmentOpen} onClick={onToggleDepartments}>
@@ -3866,12 +3950,17 @@ const LabToolbar = ({
         消息群
       </button>
     ) : null}
+    <button type="button" className="cloud-lab-chip-button" data-active={findGameActive} onClick={onStartFindGame}>
+      找人
+    </button>
   </div>
 );
 
 const interactionTools: Array<{ kind: InteractionTool; label: string }> = [
   { kind: "flower", label: "鲜花" },
   { kind: "egg", label: "鸡蛋" },
+  { kind: "paper_airplane", label: "纸飞机" },
+  { kind: "firework", label: "烟花" },
   { kind: "hammer", label: "锤子" },
   { kind: "whip", label: "鞭子" },
   { kind: "water", label: "大桶水" },
@@ -4056,6 +4145,44 @@ const SnakeGameOverlay = ({ onClose }: { onClose: () => void }) => {
             <div className="cloud-lab-member-meta" style={{ color: "#94a3b8" }}>暂无排行榜</div>
           )}
         </div>
+      </div>
+    </div>
+  );
+};
+
+type FindPersonGame = {
+  active: boolean;
+  targetId: string | null;
+  score: number;
+  remaining: number;
+  round: number;
+  message: string;
+};
+
+const FindPersonGamePanel = ({
+  game,
+  targetName,
+  onStop,
+}: {
+  game: FindPersonGame;
+  targetName: string;
+  onStop: () => void;
+}) => {
+  if (!game.active) return null;
+  return (
+    <div className="cloud-lab-find-game-panel">
+      <div className="cloud-lab-find-game-card">
+        <div className="cloud-lab-find-game-title">
+          <span>找人小游戏</span>
+          <button type="button" className="cloud-lab-chip-button" onClick={onStop}>结束</button>
+        </div>
+        <div className="cloud-lab-find-game-target">找到：{targetName || "成员"}</div>
+        <div className="cloud-lab-find-game-meta">
+          <span>得分 {game.score}</span>
+          <span>剩余 {game.remaining}s</span>
+          <span>第 {game.round} 轮</span>
+        </div>
+        {game.message ? <div className="cloud-lab-member-meta">{game.message}</div> : null}
       </div>
     </div>
   );
@@ -4400,6 +4527,8 @@ const MemberSheet = ({
             <Button size="mini" fill="outline" onClick={() => onArrangeMeeting(avatar.id)}>约会议</Button>
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:flower`} onClick={() => onSendInteraction(avatar.id, "flower")}>送鲜花</Button>
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:egg`} onClick={() => onSendInteraction(avatar.id, "egg")}>丢鸡蛋</Button>
+            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:paper_airplane`} onClick={() => onSendInteraction(avatar.id, "paper_airplane")}>纸飞机</Button>
+            <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:firework`} onClick={() => onSendInteraction(avatar.id, "firework")}>烟花</Button>
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:throw`} onClick={() => onSendInteraction(avatar.id, "throw")}>扔飞</Button>
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:hammer`} onClick={() => onSendInteraction(avatar.id, "hammer")}>锤子</Button>
             <Button size="mini" fill="outline" loading={sendingInteractionKey === `${avatar.id}:whip`} onClick={() => onSendInteraction(avatar.id, "whip")}>鞭子</Button>
@@ -4675,6 +4804,14 @@ const CloudLabPage = () => {
   const [interactionToolsOpen, setInteractionToolsOpen] = useState(false);
   const [activeInteractionTool, setActiveInteractionTool] = useState<InteractionTool | null>(null);
   const [snakeGameOpen, setSnakeGameOpen] = useState(false);
+  const [findGame, setFindGame] = useState<FindPersonGame>({
+    active: false,
+    targetId: null,
+    score: 0,
+    remaining: 45,
+    round: 1,
+    message: "",
+  });
   const [labMessageConfig, setLabMessageConfig] = useState<LabMessageConfig | null>(null);
   const [messageConfigDraft, setMessageConfigDraft] = useState({ chat_id: "", chat_name: "" });
   const [memberMessageDraft, setMemberMessageDraft] = useState("");
@@ -5081,10 +5218,52 @@ const CloudLabPage = () => {
       .sort((left, right) => Number(Boolean(right.chatCluster)) - Number(Boolean(left.chatCluster)))
       .slice(0, WORKSTATION_LIMIT);
   }, [visibleAvatars]);
+  const pickFindGameTarget = useCallback((excludeId?: string | null) => {
+    const pool = stationAvatars.filter((avatar) => avatar.id !== excludeId);
+    const candidates = pool.length ? pool : stationAvatars;
+    if (!candidates.length) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }, [stationAvatars]);
+  const findGameTargetName = useMemo(
+    () => stationAvatars.find((avatar) => avatar.id === findGame.targetId)?.name || "",
+    [findGame.targetId, stationAvatars],
+  );
   const selectedAvatar = useMemo(
     () => avatars.find((avatar) => avatar.id === selectedId) || null,
     [avatars, selectedId],
   );
+  const startFindGame = useCallback(() => {
+    const target = pickFindGameTarget();
+    if (!target) {
+      Toast.show({ icon: "fail", content: "当前没有可寻找的成员" });
+      return;
+    }
+    setSnakeGameOpen(false);
+    setSelectedId(null);
+    setFindGame({
+      active: true,
+      targetId: target.id,
+      score: 0,
+      remaining: 45,
+      round: 1,
+      message: "点击场景里对应的人",
+    });
+  }, [pickFindGameTarget]);
+  useEffect(() => {
+    if (!findGame.active) return undefined;
+    const timer = window.setInterval(() => {
+      setFindGame((current) => {
+        if (!current.active) return current;
+        const nextRemaining = current.remaining - 1;
+        if (nextRemaining <= 0) {
+          Toast.show({ icon: "success", content: `找人结束：${current.score} 分` });
+          return { ...current, active: false, remaining: 0, message: "游戏结束" };
+        }
+        return { ...current, remaining: nextRemaining };
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [findGame.active]);
   useEffect(() => {
     if (!targetMemberOpenId || !avatars.length) return;
     const target = avatars.find((avatar) => avatar.id === targetMemberOpenId);
@@ -5153,8 +5332,29 @@ const CloudLabPage = () => {
   }, [directoryMembers, members, selectedId]);
 
   const handleSelectMember = useCallback((memberId: string) => {
+    if (findGame.active && findGame.targetId) {
+      if (memberId === findGame.targetId) {
+        const nextTarget = pickFindGameTarget(memberId);
+        window.dispatchEvent(new CustomEvent("cloud-lab:interaction-effect", { detail: { memberId, kind: "firework" } }));
+        setFindGame((current) => ({
+          ...current,
+          targetId: nextTarget?.id || memberId,
+          score: current.score + 1,
+          round: current.round + 1,
+          remaining: Math.min(60, current.remaining + 3),
+          message: nextTarget ? "找到了！下一个目标已刷新" : "找到了！继续点击场景里的人",
+        }));
+      } else {
+        setFindGame((current) => ({
+          ...current,
+          remaining: Math.max(1, current.remaining - 3),
+          message: "不是这个人，扣 3 秒",
+        }));
+      }
+      return;
+    }
     startTransition(() => setSelectedId(memberId));
-  }, []);
+  }, [findGame.active, findGame.targetId, pickFindGameTarget]);
 
   const handleSetPresenceStatus = useCallback((memberId: string, status: PresenceStatus) => {
     if (!me?.open_id || (memberId !== me.open_id && !canManagePresenceStatuses)) {
@@ -5431,7 +5631,7 @@ const CloudLabPage = () => {
       });
       Toast.show({
         icon: "success",
-        content: kind === "flower" ? "鲜花已送出" : kind === "egg" ? "鸡蛋已丢出" : kind === "throw" ? "已扔飞" : kind === "hammer" ? "锤子已砸下" : kind === "water" ? `大桶水泼中 ${memberIds.length} 人` : "已抽成忙碌",
+        content: kind === "flower" ? "鲜花已送出" : kind === "egg" ? "鸡蛋已丢出" : kind === "paper_airplane" ? "纸飞机已送达" : kind === "firework" ? `烟花点亮 ${memberIds.length} 人` : kind === "throw" ? "已扔飞" : kind === "hammer" ? "锤子已砸下" : kind === "water" ? `大桶水泼中 ${memberIds.length} 人` : "已抽成忙碌",
       });
     } catch {
       Toast.show({ icon: "fail", content: "互动失败" });
@@ -5442,7 +5642,7 @@ const CloudLabPage = () => {
 
   const closeFloatingPanels = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
-    if (target?.closest(".cloud-lab-department-panel, .cloud-lab-member-sheet, .cloud-lab-area-strip, .cloud-lab-toolbar, .cloud-lab-interaction-toolbox, .cloud-lab-message-config, .cloud-lab-availability-panel")) {
+    if (target?.closest(".cloud-lab-department-panel, .cloud-lab-member-sheet, .cloud-lab-area-strip, .cloud-lab-toolbar, .cloud-lab-interaction-toolbox, .cloud-lab-message-config, .cloud-lab-availability-panel, .cloud-lab-find-game-panel")) {
       return;
     }
     setSelectedId(null);
@@ -5464,17 +5664,26 @@ const CloudLabPage = () => {
             selectedId={selectedId}
             activeInteractionTool={activeInteractionTool}
             onUseInteractionTool={sendLabInteraction}
-            onOpenSnakeGame={() => setSnakeGameOpen(true)}
+            onOpenSnakeGame={() => {
+              setFindGame((current) => ({ ...current, active: false }));
+              setSnakeGameOpen(true);
+            }}
             onSelectMember={handleSelectMember}
           />
           {snakeGameOpen ? <SnakeGameOverlay onClose={() => setSnakeGameOpen(false)} /> : null}
+          <FindPersonGamePanel
+            game={findGame}
+            targetName={findGameTargetName}
+            onStop={() => setFindGame((current) => ({ ...current, active: false, message: "已结束" }))}
+          />
           <div className="cloud-lab-view-hint">
-            点击画面后用 WASD 平移 · 最近半小时群聊 · 点击成员查看状态和任务
+            点击画面后用 WASD 平移 · 最近半小时群聊 · 点击圆桌玩贪吃蛇
           </div>
           <LabToolbar
             departmentOpen={departmentPanelOpen}
             availabilityOpen={availabilityOpen}
             messageConfigOpen={messageConfigOpen}
+            findGameActive={findGame.active}
             canConfigureMessages={canViewMemberDetails}
             onToggleDepartments={() => {
               setDepartmentPanelOpen((value) => {
@@ -5500,6 +5709,15 @@ const CloudLabPage = () => {
               setAvailabilityOpen(false);
               setInteractionToolsOpen(false);
               setExpandedDepartments({});
+            }}
+            onStartFindGame={() => {
+              setDepartmentPanelOpen(false);
+              setAvailabilityOpen(false);
+              setMessageConfigOpen(false);
+              setInteractionToolsOpen(false);
+              setExpandedDepartments({});
+              if (findGame.active) setFindGame((current) => ({ ...current, active: false, message: "已结束" }));
+              else startFindGame();
             }}
           />
           <InteractionToolbox

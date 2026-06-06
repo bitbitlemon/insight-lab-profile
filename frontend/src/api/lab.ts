@@ -8,7 +8,7 @@ export type LabResourceStatus = "available" | "occupied" | "maintenance" | "disa
 export type LabReservationStatus = "pending" | "approved" | "rejected" | "cancelled" | "completed";
 export type LabOccupancyStatus = "present" | "working" | "meeting" | "class" | "away" | "leave" | "offline" | "reserved";
 export type LabOccupancySource = "manual" | "calendar" | "class" | "leave" | "reservation" | "device" | "system";
-export type LabInteractionKind = "flower" | "egg" | "throw" | "hammer" | "whip" | "water";
+export type LabInteractionKind = "flower" | "egg" | "throw" | "hammer" | "whip" | "water" | "paper_airplane" | "firework";
 
 export interface LabSpace {
   space_id: number;
