@@ -21,7 +21,7 @@ from app.models import Member, Project, ProjectChat, ProjectChatMessage, Project
 log = logging.getLogger(__name__)
 
 LARK_CLI_CANDIDATES = (
-    "/home/ubuntu/.npm-global/bin/lark-cli",
+    "/usr/local/bin/lark-cli",
     "/home/ubuntu/.npm-global/lib/node_modules/@larksuite/cli/bin/lark-cli",
     "lark-cli",
 )
@@ -129,6 +129,8 @@ def fetch_chat_messages(
         sort,
         "--as",
         "bot",
+        "--format",
+        "json",
     ]
     if page_token:
         args.extend(["--page-token", page_token])
@@ -217,6 +219,8 @@ def fetch_message_backend_records(
         str(offset),
         "--as",
         "bot",
+        "--format",
+        "json",
     ]
     if view_id:
         args.extend(["--view-id", view_id])
@@ -307,6 +311,28 @@ def _cell_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _matched_members_from_text(text: str, members_by_name: dict[str, list[Member]], *, limit: int = 12) -> list[Member]:
+    if not text:
+        return []
+    matched: list[Member] = []
+    seen: set[str] = set()
+    names = sorted((name for name in members_by_name if name), key=len, reverse=True)
+    for name in names:
+        if len(name) < 2 or name not in text:
+            continue
+        candidates = members_by_name.get(name) or []
+        if len(candidates) != 1:
+            continue
+        member = candidates[0]
+        if member.open_id in seen:
+            continue
+        seen.add(member.open_id)
+        matched.append(member)
+        if len(matched) >= limit:
+            break
+    return matched
+
+
 def _message_backend_rows(
     data: dict[str, Any],
     *,
@@ -338,6 +364,7 @@ def build_message_backend_chat_clusters(
     recent_minutes: int | None = None,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
+    latest: bool = False,
 ) -> list[dict[str, Any]]:
     members = {
         row.open_id: row
@@ -351,12 +378,17 @@ def build_message_backend_chat_clusters(
     if not members:
         return []
 
-    cutoff = start_at or (datetime.now() - timedelta(minutes=max(1, recent_minutes)) if recent_minutes is not None else datetime.now() - timedelta(hours=max(1, recent_hours)))
+    cutoff = None if latest and start_at is None and end_at is None else (
+        start_at or (datetime.now() - timedelta(minutes=max(1, recent_minutes)) if recent_minutes is not None else datetime.now() - timedelta(hours=max(1, recent_hours)))
+    )
     upper_bound = end_at
     grouped: dict[str, dict[str, Any]] = {}
-    for row in fetch_message_backend_rows_from_tables(limit=max(limit, 1)):
+    backend_limit = min(max(limit, 1), 400) if latest else max(limit, 1)
+    for row in fetch_message_backend_rows_from_tables(limit=backend_limit):
         message_time = _message_backend_time(row)
-        if not message_time or message_time < cutoff:
+        if not message_time:
+            continue
+        if cutoff and message_time < cutoff:
             continue
         if upper_bound and message_time > upper_bound:
             continue
@@ -370,7 +402,15 @@ def build_message_backend_chat_clusters(
             matches = members_by_name.get(sender_name) or []
             if len(matches) == 1:
                 member = matches[0]
-        if not (chat_id and chat_name and member):
+        related_text = " ".join(
+            _cell_text(row.get(key))
+            for key in ("消息内容", "字段拼接", "全字段拼接", "消息详细信息", "申请人")
+            if row.get(key) is not None
+        )
+        related_members = _matched_members_from_text(related_text, members_by_name)
+        if member and all(item.open_id != member.open_id for item in related_members):
+            related_members.insert(0, member)
+        if not (chat_id and chat_name and related_members):
             continue
         cluster = grouped.setdefault(
             chat_id,
@@ -386,13 +426,17 @@ def build_message_backend_chat_clusters(
             },
         )
         cluster["message_count"] += 1
-        if member.open_id not in cluster["member_open_ids"]:
-            cluster["member_open_ids"].append(member.open_id)
-            cluster["member_names"].append(member.name)
+        for related_member in related_members:
+            if related_member.open_id not in cluster["member_open_ids"]:
+                cluster["member_open_ids"].append(related_member.open_id)
+                cluster["member_names"].append(related_member.name)
         if message_time and (cluster["last_message_at"] is None or message_time > cluster["last_message_at"]):
             cluster["last_message_at"] = message_time
         if content and len(cluster["thoughts"]) < 5:
-            cluster["thoughts"].append(f"{member.name}: {content[:80]}")
+            speaker = member.name if member else (related_members[0].name if related_members else "成员")
+            listeners = [item.name for item in related_members if not member or item.open_id != member.open_id][:3]
+            suffix = f" -> {'、'.join(listeners)}" if listeners else ""
+            cluster["thoughts"].append(f"{speaker}{suffix}: {content[:80]}")
 
     clusters = [item for item in grouped.values() if len(item["member_open_ids"]) >= min_members]
     clusters.sort(key=lambda item: item.get("last_message_at") or datetime.min, reverse=True)
@@ -410,6 +454,7 @@ def build_recent_chat_clusters(
     recent_minutes: int | None = None,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
+    latest: bool = False,
 ) -> list[dict[str, Any]]:
     try:
         backend_clusters = build_message_backend_chat_clusters(
@@ -420,6 +465,7 @@ def build_recent_chat_clusters(
             recent_minutes=recent_minutes,
             start_at=start_at,
             end_at=end_at,
+            latest=latest,
         )
         if backend_clusters:
             return backend_clusters[:max_chats]
@@ -601,23 +647,22 @@ def list_chat_topics_preview(
     topics: dict[str, dict[str, Any]] = {}
     data = fetch_chat_messages(chat_id, page_size=page_size, page_token=page_token, sort="desc")
     for message in data.get("messages") or []:
-        key = str(message.get("thread_id") or "")
+        key = str(message.get("thread_id") or message.get("root_id") or "")
         replies = message.get("thread_replies")
-        if not key.startswith("omt_") or not isinstance(replies, list):
+        if not key.startswith("omt_"):
             continue
-        if not key:
-            continue
+        safe_replies = replies if isinstance(replies, list) and replies else [message]
         reply_times = [
             _parse_lark_time(reply.get("create_time") or reply.get("created_at") or reply.get("create_time_ms"))
-            for reply in replies
+            for reply in safe_replies
             if isinstance(reply, dict)
         ]
         valid_reply_times = [item for item in reply_times if item is not None]
         last_reply_at = max(valid_reply_times) if valid_reply_times else _parse_lark_time(message.get("create_time") or message.get("created_at") or message.get("create_time_ms"))
-        root_reply = replies[0] if replies and isinstance(replies[0], dict) else message
+        root_reply = safe_replies[0] if safe_replies and isinstance(safe_replies[0], dict) else message
         content = _stringify_content(root_reply.get("content") or message.get("content"))
         last_reply = max(
-            (reply for reply in replies if isinstance(reply, dict)),
+            (reply for reply in safe_replies if isinstance(reply, dict)),
             key=lambda reply: _parse_lark_time(reply.get("create_time") or reply.get("created_at") or reply.get("create_time_ms")) or datetime.min,
             default=message,
         )
@@ -625,7 +670,7 @@ def list_chat_topics_preview(
             "topic_key": key,
             "title": _topic_title(content, key),
             "last_reply_at": last_reply_at,
-            "reply_count": len(replies),
+            "reply_count": len(safe_replies),
             "last_message_id": last_reply.get("message_id") or message.get("message_id"),
         }
     return {

@@ -1,13 +1,15 @@
-"""认证路由: /api/auth/lark/login (飞书 OIDC 登录), /api/auth/me (当前用户), /api/auth/diagnose (H5 部署诊断), /api/auth/refresh (双 token 续期)。"""
+"""认证路由: 飞书 OIDC / 浏览器登录 / 当前用户 / 诊断 / refresh。"""
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..middleware import limiter
 from ..models import Member
+from ..permissions import member_is_super_admin
 from ..schemas.members import MemberRead
 from ..services.auth import create_jwt, decode_jwt, exchange_lark_code, AuthError
 from ..services.lark import get_lark, LarkApiError
@@ -17,6 +19,11 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 class LarkLoginRequest(BaseModel):
     code: str
+
+
+class BrowserLoginRequest(BaseModel):
+    identifier: str
+    passcode: str | None = None
 
 
 class LarkLoginResponse(BaseModel):
@@ -32,6 +39,16 @@ class RefreshRequest(BaseModel):
 class RefreshResponse(BaseModel):
     token: str
     refresh_token: str
+
+
+def _issue_login_response(user: Member) -> LarkLoginResponse:
+    access = create_jwt(user.open_id, user.role, user.name, kind="access")
+    refresh = create_jwt(user.open_id, user.role, user.name, kind="refresh")
+    return LarkLoginResponse(token=access, refresh_token=refresh, user=_serialize_member(user))
+
+
+def _serialize_member(user: Member) -> MemberRead:
+    return MemberRead.model_validate(user).model_copy(update={"is_super_admin": member_is_super_admin(user)})
 
 
 @router.post("/lark/login", response_model=LarkLoginResponse)
@@ -76,9 +93,36 @@ async def lark_login(request: Request, req: LarkLoginRequest, db: Session = Depe
             db.commit()
             db.refresh(user)
 
-    access = create_jwt(user.open_id, user.role, user.name, kind="access")
-    refresh = create_jwt(user.open_id, user.role, user.name, kind="refresh")
-    return LarkLoginResponse(token=access, refresh_token=refresh, user=MemberRead.model_validate(user))
+    return _issue_login_response(user)
+
+
+@router.post("/browser/login", response_model=LarkLoginResponse)
+@limiter.limit(f"{settings.rate_limit_login_per_minute}/minute")
+def browser_login(request: Request, req: BrowserLoginRequest, db: Session = Depends(get_db)):
+    identifier = req.identifier.strip()
+    if not identifier:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请输入姓名、邮箱、手机号或 open_id")
+    shared_secret = settings.web_login_shared_secret.strip()
+    if shared_secret and (req.passcode or "") != shared_secret:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "浏览器登录口令错误")
+
+    rows = db.execute(
+        select(Member).where(
+            or_(
+                Member.open_id == identifier,
+                Member.name == identifier,
+                Member.email == identifier,
+                Member.mobile == identifier,
+            )
+        )
+    ).scalars().all()
+    active_rows = [row for row in rows if row.status in ("active", "on_leave")]
+    if not active_rows:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "未找到可登录成员")
+    if len(active_rows) > 1:
+        raise HTTPException(status.HTTP_409_CONFLICT, "匹配到多个成员，请使用邮箱、手机号或 open_id")
+    user = active_rows[0]
+    return _issue_login_response(user)
 
 
 @router.post("/refresh", response_model=RefreshResponse)
@@ -98,7 +142,7 @@ def refresh_token(request: Request, req: RefreshRequest, db: Session = Depends(g
 
 @router.get("/me", response_model=MemberRead)
 def me(current: Member = Depends(get_current_user)):
-    return MemberRead.model_validate(current)
+    return _serialize_member(current)
 
 
 @router.get("/diagnose")

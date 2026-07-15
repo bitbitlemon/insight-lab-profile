@@ -7,6 +7,7 @@ import { listCompetitions, type Competition } from "../api/competitions";
 import { listProjects } from "../api/projects";
 import { listTodayTasks } from "../api/tasks";
 import type { Member, Project, ProjectPriority, Task } from "../types/api";
+import { projectWorkbenchPath } from "../utils/projectNavigation";
 import {
   SectionEmpty,
   SectionHeader,
@@ -437,7 +438,7 @@ const TodaySummary = ({ member }: { member: Member }) => {
           </SummaryBlock>
         ) : null}
 
-        <SummaryBlock title="我的任务" count={tasks.items.length} actionLabel="查看全部 →" onAction={() => navigate("/projects?tab=tasks")}>
+        <SummaryBlock title="我的任务" count={tasks.items.length} actionLabel="查看全部 →" onAction={() => navigate(projectWorkbenchPath(null, "tasks"))}>
           <LoadingOrError loading={tasks.loading} error={tasks.error} loadingText="正在加载我的任务..." errorText="我的任务加载失败" />
           {!tasks.loading && !tasks.error && tasks.items.length === 0 ? (
             <div style={inlineEmptyStyle}>今天没有待办任务</div>
@@ -456,7 +457,7 @@ const TodaySummary = ({ member }: { member: Member }) => {
                     type="button"
                     className="today-summary-row"
                     onClick={() => {
-                      if (task.project_id) navigate(`/projects/${task.project_id}`);
+                      if (task.project_id) navigate(projectWorkbenchPath(task.project_id));
                     }}
                     style={{ cursor: task.project_id ? "pointer" : "default" }}
                   >
@@ -504,7 +505,7 @@ const TodaySummary = ({ member }: { member: Member }) => {
                 const total = project.task_count || 0;
                 const progress = total > 0 ? `${done}/${total} 任务` : "暂无任务";
                 return (
-                  <button key={project.project_id} type="button" className="today-summary-row" onClick={() => navigate(`/projects/${project.project_id}`)}>
+                  <button key={project.project_id} type="button" className="today-summary-row" onClick={() => navigate(projectWorkbenchPath(project.project_id))}>
                     <span style={{ ...chipStyle(tone.bg, tone.fg, 700), flexShrink: 0 }}>{tone.label}</span>
                     <span style={{ minWidth: 0, flex: 1 }}>
                       <span style={itemTitleStyle}>{project.name}</span>
@@ -538,7 +539,7 @@ const TodaySummary = ({ member }: { member: Member }) => {
                     key={`${item.kind}-${item.id}`}
                     type="button"
                     className="today-summary-row"
-                    onClick={() => navigate(item.kind === "project" ? `/projects/${item.id}` : `/competitions/${item.id}`)}
+                    onClick={() => navigate(item.kind === "project" ? projectWorkbenchPath(item.id) : `/competitions/${item.id}`)}
                   >
                     <span
                       style={{

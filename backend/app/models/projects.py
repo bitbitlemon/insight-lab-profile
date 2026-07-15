@@ -29,6 +29,7 @@ class Project(Base):
     )
 
     project_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    current_stage: Mapped[str | None] = mapped_column(String, default="启动阶段", nullable=True)
     base_record_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -42,6 +43,7 @@ class Project(Base):
     target_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     actual_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     tags: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workflow_nodes: Mapped[str | None] = mapped_column(Text, nullable=True)
     points_awarded: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("members.open_id"), nullable=False)
@@ -139,6 +141,9 @@ class Task(Base):
     today_todo_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
     progress_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
+    helper_open_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mentor_open_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lark_task_guid: Mapped[str | None] = mapped_column(String, nullable=True)
     task_origin: Mapped[str] = mapped_column(String, default="manual", nullable=False)
     received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -151,12 +156,48 @@ class Task(Base):
     project: Mapped["Project | None"] = relationship("Project", back_populates="tasks")
 
 
+class TaskFeedback(Base):
+    """任务反馈: 记录执行中遇到的问题，供后续按人/项目/任务统计."""
+
+    __tablename__ = "task_feedbacks"
+    __table_args__ = (
+        Index("idx_task_feedbacks_task", "task_id"),
+        Index("idx_task_feedbacks_reporter", "reporter_open_id"),
+        Index("idx_task_feedbacks_project", "project_id"),
+    )
+
+    feedback_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.task_id", ondelete="CASCADE"), nullable=False)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.project_id", ondelete="CASCADE"), nullable=True)
+    reporter_open_id: Mapped[str] = mapped_column(ForeignKey("members.open_id"), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="open", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SystemFeedback(Base):
+    """系统反馈: 全局悬浮反馈入口收集的问题，供后续按人和页面统计."""
+
+    __tablename__ = "system_feedbacks"
+    __table_args__ = (
+        Index("idx_system_feedbacks_reporter", "reporter_open_id"),
+        Index("idx_system_feedbacks_status", "status"),
+    )
+
+    feedback_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    reporter_open_id: Mapped[str] = mapped_column(ForeignKey("members.open_id"), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    page_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="open", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class ProjectChat(Base):
     """飞书群聊关联: 一个项目可关联多个群聊."""
 
     __tablename__ = "project_chats"
     __table_args__ = (
-        UniqueConstraint("project_id", "chat_id", name="uq_project_chats_project_chat"),
+        UniqueConstraint("project_id", "chat_id", "selected_topic_key", name="uq_project_chats_project_chat_topic"),
         Index("idx_project_chats_project", "project_id"),
         Index("idx_project_chats_chat", "chat_id"),
     )
@@ -281,3 +322,22 @@ class ProjectLog(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ProjectLogComment(Base):
+    """Corrections/notes attached to an immutable project log."""
+
+    __tablename__ = "project_log_comments"
+    __table_args__ = (
+        Index("idx_project_log_comments_log_time", "log_id", "created_at"),
+        Index("idx_project_log_comments_project", "project_id"),
+        Index("idx_project_log_comments_author", "author_open_id"),
+    )
+
+    comment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    log_id: Mapped[int] = mapped_column(ForeignKey("project_logs.log_id", ondelete="CASCADE"), nullable=False)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.project_id", ondelete="CASCADE"), nullable=False)
+    author_open_id: Mapped[str] = mapped_column(ForeignKey("members.open_id"), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    comment_type: Mapped[str] = mapped_column(String, default="correction", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

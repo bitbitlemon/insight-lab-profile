@@ -8,6 +8,7 @@ import { listTasks } from "../api/tasks";
 import { MemberAvatarLink } from "../components/MemberProfileLink";
 import { PageShell, SectionEmpty } from "../components/ui";
 import type { Member, Project, ProjectStatus, Task, TaskStatus } from "../types/api";
+import { filterVisibleOrgMembers, getVisibleOrgGroupOptions, memberOrgGroup, normalizeOrgGroup, projectOrgGroup } from "../utils/orgGroups";
 
 type DepartmentKey = "all" | string;
 
@@ -154,19 +155,20 @@ const BoardPage = () => {
 
   const loadBoard = () => {
     setLoading(true);
-    const taskStatuses: TaskStatus[] = ["todo", "in_progress", "blocked", "done"];
-    const projectStatuses: ProjectStatus[] = ["planning", "active", "paused", "completed"];
     Promise.all([
       listMembers({ page_size: 500 }),
-      Promise.all(taskStatuses.map((status) => listTasks({ status, page_size: 500 }).catch(() => ({ items: [], total: 0, page: 1, page_size: 500 })))),
-      Promise.all(projectStatuses.map((status) => listProjects({ status, page_size: 300 }).catch(() => ({ items: [], total: 0, page: 1, page_size: 300 })))),
+      listTasks({ page_size: 500 }).catch(() => ({ items: [], total: 0, page: 1, page_size: 500 })),
+      listProjects({ page_size: 200 }).catch(() => ({ items: [], total: 0, page: 1, page_size: 200 })),
     ])
-      .then(([memberPage, taskPages, projectPages]) => {
-        const activeMembers = memberPage.items.filter((member) => member.status === "active");
-        const taskSeen = new Set<number>();
-        const allTasks = taskPages.flatMap((page) => page.items).filter((task) => taskSeen.has(task.task_id) ? false : (taskSeen.add(task.task_id), true));
-        const projectSeen = new Set<number>();
-        const allProjects = projectPages.flatMap((page) => page.items).filter((project) => projectSeen.has(project.project_id) ? false : (projectSeen.add(project.project_id), true));
+      .then(([memberPage, taskPage, projectPage]) => {
+        const activeMembers = filterVisibleOrgMembers(
+          memberPage.items.filter((member) => member.status === "active"),
+        ).map((member) => ({ ...member, department: normalizeOrgGroup(member.department) || member.department }));
+        const allTasks = taskPage.items.filter((task) => task.status !== "cancelled");
+        const allProjects = projectPage.items
+          .map((project) => ({ ...project, department: projectOrgGroup(project) || project.department }))
+          .filter((project) => ["planning", "active", "paused", "completed"].includes(project.status))
+          .filter((project) => project.department || activeMembers.some((member) => member.open_id === project.owner_open_id));
         setMembers(activeMembers);
         setTasks(allTasks);
         setProjects(allProjects);
@@ -192,12 +194,11 @@ const BoardPage = () => {
   }, []);
 
   const departments = useMemo(() => {
-    const values = Array.from(new Set(members.map((member) => member.department || "未设置部门")));
-    return values.sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+    return getVisibleOrgGroupOptions(members.map((member) => member.department));
   }, [members]);
 
   const selectedMembers = useMemo(
-    () => members.filter((member) => department === "all" || (member.department || "未设置部门") === department),
+    () => members.filter((member) => department === "all" || memberOrgGroup(member) === department),
     [department, members],
   );
   const selectedMemberIds = useMemo(() => new Set(selectedMembers.map((member) => member.open_id)), [selectedMembers]);
@@ -206,7 +207,7 @@ const BoardPage = () => {
     [selectedMemberIds, tasks],
   );
   const selectedProjects = useMemo(
-    () => projects.filter((project) => department === "all" || (project.department || "未设置部门") === department || selectedMemberIds.has(project.owner_open_id)),
+    () => projects.filter((project) => department === "all" || projectOrgGroup(project) === department || selectedMemberIds.has(project.owner_open_id)),
     [department, projects, selectedMemberIds],
   );
 
@@ -256,10 +257,10 @@ const BoardPage = () => {
 
   const departmentRows = useMemo(() => {
     return departments.map((name) => {
-      const deptMembers = members.filter((member) => (member.department || "未设置部门") === name);
+      const deptMembers = members.filter((member) => memberOrgGroup(member) === name);
       const ids = new Set(deptMembers.map((member) => member.open_id));
       const deptTasks = tasks.filter((task) => ids.has(task.assignee_open_id || "") || ids.has(task.created_by));
-      const deptProjects = projects.filter((project) => (project.department || "未设置部门") === name || ids.has(project.owner_open_id));
+      const deptProjects = projects.filter((project) => projectOrgGroup(project) === name || ids.has(project.owner_open_id));
       const inProgress = deptTasks.filter((task) => task.status === "in_progress").length;
       const blocked = deptTasks.filter((task) => task.status === "blocked").length;
       const today = deptTasks.filter((task) => taskTouchesDay(task, todayKey)).length;

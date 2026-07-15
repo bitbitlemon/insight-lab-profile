@@ -2,12 +2,13 @@
 from __future__ import annotations
 import json, logging, os, shutil, subprocess, uuid
 from urllib.parse import urlencode
+from ..config import settings
 
 log = logging.getLogger(__name__)
 LARK_APP_ID = os.getenv("LARK_APP_ID") or os.getenv("VITE_LARK_APP_ID") or "cli_a9147e9473f81bef"
 
 LARK_CLI_CANDIDATES = (
-    "/home/ubuntu/.npm-global/bin/lark-cli",
+    "/usr/local/bin/lark-cli",
     "/home/ubuntu/.npm-global/lib/node_modules/@larksuite/cli/bin/lark-cli",
     "lark-cli",
 )
@@ -43,6 +44,8 @@ def _receipt_link(kind: str, target_id: int, redirect: str | None = None) -> str
 
 def send_text(open_id: str, text: str, idempotency_key: str | None = None) -> bool:
     """给指定用户私聊发文本消息. 返回是否成功. 失败不抛错."""
+    if not settings.notifications_enabled:
+        return False
     if not (open_id and text):
         return False
     args = [_lark_cli(), "im", "+messages-send",
@@ -61,7 +64,29 @@ def send_text(open_id: str, text: str, idempotency_key: str | None = None) -> bo
         return False
 
 
+def send_chat_text(chat_id: str, text: str, idempotency_key: str | None = None) -> bool:
+    """给指定会话发文本消息. 返回是否成功. 失败不抛错."""
+    if not (chat_id and text):
+        return False
+    args = [_lark_cli(), "im", "+messages-send",
+            "--chat-id", chat_id, "--text", text,
+            "--as", "bot"]
+    if idempotency_key:
+        args += ["--idempotency-key", idempotency_key]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            log.warning("lark im chat send failed to %s via %s: %s", chat_id[:12], args[0], r.stderr.strip()[:200])
+            return False
+        return True
+    except Exception as e:
+        log.warning("lark im chat send exception to %s: %s", chat_id[:12], e)
+        return False
+
+
 def send_markdown(open_id: str, markdown: str, idempotency_key: str | None = None) -> bool:
+    if not settings.notifications_enabled:
+        return False
     if not (open_id and markdown):
         return False
     args = [_lark_cli(), "im", "+messages-send",
@@ -82,6 +107,8 @@ def send_markdown(open_id: str, markdown: str, idempotency_key: str | None = Non
 
 def send_card(open_id: str, card: dict, idempotency_key: str | None = None) -> bool:
     """给指定用户私聊发飞书卡片. 返回是否成功. 失败不抛错."""
+    if not settings.notifications_enabled:
+        return False
     if not (open_id and card):
         return False
     args = [
@@ -127,9 +154,24 @@ def _action_button(text: str, url: str | None = None, button_type: str = "primar
     return button
 
 
+def _receipt_action_button(text: str, kind: str, target_id: int | None, detail_url: str, context: dict | None = None) -> dict:
+    if not target_id:
+        return _action_button(text, detail_url, "primary")
+    value = {
+        "action": "receipt_ack",
+        "kind": kind,
+        "target_id": target_id,
+        "detail_url": detail_url,
+    }
+    if context:
+        value.update(context)
+    return _action_button(text, None, "primary", value)
+
+
 def notify_task_assigned(assignee_open_id: str, task_title: str, due_date: str | None,
                          project_name: str | None = None, creator_name: str | None = None,
                          creator_open_id: str | None = None, task_id: int | None = None) -> bool:
+    board_url = _app_link("/board")
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -151,8 +193,11 @@ def notify_task_assigned(assignee_open_id: str, task_title: str, due_date: str |
             {
                 "tag": "action",
                 "actions": [
-                    _action_button("收到", _receipt_link("task", task_id, "/board"), "primary") if task_id else _action_button("打开任务看板", _app_link("/board")),
-                    _action_button("打开任务看板", _app_link("/board"), "default"),
+                    _receipt_action_button("收到", "task", task_id, board_url, {
+                        "task_title": task_title,
+                        "project_name": project_name,
+                    }),
+                    _action_button("打开任务看板", board_url, "default"),
                 ],
             },
         ],
@@ -175,6 +220,7 @@ def notify_leave_decided(applicant_open_id: str, approved: bool, leave_type: str
 def notify_project_member_added(member_open_id: str, project_name: str, role: str,
                                 added_by_name: str | None = None, project_id: int | None = None) -> bool:
     role_label = {"owner": "负责人", "co_lead": "联合负责人", "member": "成员", "observer": "观察员"}.get(role, role)
+    project_url = _app_link(f"/projects?project_id={project_id}") if project_id else _app_link("/projects")
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -195,8 +241,11 @@ def notify_project_member_added(member_open_id: str, project_name: str, role: st
             {
                 "tag": "action",
                 "actions": [
-                    _action_button("收到", _receipt_link("project", project_id, f"/projects/{project_id}"), "primary") if project_id else _action_button("打开项目列表", _app_link("/projects")),
-                    _action_button("打开项目", _app_link(f"/projects/{project_id}") if project_id else _app_link("/projects"), "default"),
+                    _receipt_action_button("收到", "project", project_id, project_url, {
+                        "project_name": project_name,
+                        "role_label": role_label,
+                    }),
+                    _action_button("打开项目", project_url, "default"),
                 ],
             },
         ],
@@ -361,7 +410,7 @@ def notify_project_log(recipient_open_id: str, *, project_name: str, title: str,
             {
                 "tag": "action",
                 "actions": [
-                    _action_button("打开项目", _app_link(f"/projects/{project_id}") if project_id else _app_link("/projects"), "primary"),
+                    _action_button("打开项目", _app_link(f"/projects?project_id={project_id}") if project_id else _app_link("/projects"), "primary"),
                 ],
             },
         ],

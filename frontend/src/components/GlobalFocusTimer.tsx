@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Dialog, Input, Selector, TextArea, Toast } from "antd-mobile";
 import { useSearchParams } from "react-router-dom";
 import {
+  createTask,
+  createSystemFeedback,
   getTaskFocusSummary,
   heartbeatTaskFocus,
   listTaskAuditLogs,
@@ -32,8 +34,12 @@ type StoredFocusSession = {
 const shellStyle: CSSProperties = {
   position: "fixed",
   right: 16,
-  bottom: 142,
+  bottom: 118,
   zIndex: 1200,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "flex-end",
+  gap: 10,
 };
 
 const panelStyle: CSSProperties = {
@@ -57,6 +63,14 @@ const formatElapsed = (seconds: number) => {
   return `${String(minutes).padStart(2, "0")}:${String(remainSeconds).padStart(2, "0")}`;
 };
 
+const todayLocalDate = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 const GlobalFocusTimer = () => {
   const { me } = useAuth();
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -75,6 +89,8 @@ const GlobalFocusTimer = () => {
   const [recordNote, setRecordNote] = useState("");
   const [recordScreenshotUrl, setRecordScreenshotUrl] = useState("");
   const [recordSaving, setRecordSaving] = useState(false);
+  const [quickCreating, setQuickCreating] = useState(false);
+  const [feedbackSaving, setFeedbackSaving] = useState(false);
   const persistSession = (next: StoredFocusSession | null) => {
     try {
       if (!next) window.localStorage.removeItem(FOCUS_STORAGE_KEY);
@@ -317,6 +333,48 @@ const GlobalFocusTimer = () => {
     }
   };
 
+  const quickCreateMiscTask = async () => {
+    const title = window.prompt("快速创建杂项任务");
+    const trimmed = (title || "").trim();
+    if (!trimmed) return;
+    setQuickCreating(true);
+    try {
+      const task = await createTask({
+        title: trimmed,
+        description: "杂项任务",
+        project_id: null,
+        status: "todo",
+        priority: "medium",
+        assignee_open_id: me?.open_id || null,
+        today_todo_date: todayLocalDate(),
+        task_origin: "misc",
+      });
+      setTasks((prev) => [task, ...prev.filter((item) => item.task_id !== task.task_id)]);
+      setTaskId(String(task.task_id));
+      window.dispatchEvent(new CustomEvent("tasks:changed", { detail: task }));
+      Toast.show({ icon: "success", content: "杂项任务已加入今日待办" });
+    } catch {
+      Toast.show({ icon: "fail", content: "创建杂项任务失败" });
+    } finally {
+      setQuickCreating(false);
+    }
+  };
+
+  const submitGlobalFeedback = async () => {
+    const content = window.prompt("请描述当前遇到的问题或建议");
+    const trimmed = (content || "").trim();
+    if (!trimmed) return;
+    setFeedbackSaving(true);
+    try {
+      await createSystemFeedback(trimmed, window.location.pathname + window.location.search);
+      Toast.show({ icon: "success", content: "反馈已提交" });
+    } catch {
+      Toast.show({ icon: "fail", content: "反馈提交失败" });
+    } finally {
+      setFeedbackSaving(false);
+    }
+  };
+
   const submitRecord = async () => {
     if (!taskId) return;
     const note = recordNote.trim();
@@ -419,15 +477,43 @@ const GlobalFocusTimer = () => {
           ) : null}
           <div style={{ color: colors.muted, fontSize: 11 }}>可随时点“记录”保存文本和截图链接；每 40 分钟也会发送飞书确认卡片。</div>
         </div>
-      ) : (
+      ) : null}
+      <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
+        <Button
+          fill="solid"
+          disabled={feedbackSaving}
+          onClick={submitGlobalFeedback}
+          style={{
+            "--border-radius": "999px",
+            "--background-color": "#111827",
+            "--border-color": "#111827",
+            padding: "8px 14px",
+            fontSize: 13,
+            fontWeight: 850,
+            boxShadow: "0 12px 24px rgba(15,23,42,0.18)",
+          } as CSSProperties}
+        >
+          反馈
+        </Button>
         <Button
           color="primary"
-          onClick={() => setOpen(true)}
-          style={{ "--border-radius": "999px", boxShadow: "0 12px 24px rgba(37,99,235,0.25)" } as CSSProperties}
+          disabled={quickCreating}
+          onClick={quickCreateMiscTask}
+          aria-label="快速创建杂项任务"
+          style={{
+            "--border-radius": "999px",
+            width: 48,
+            height: 48,
+            padding: 0,
+            fontSize: 28,
+            lineHeight: "44px",
+            fontWeight: 900,
+            boxShadow: "0 12px 24px rgba(37,99,235,0.25)",
+          } as CSSProperties}
         >
-          专注
+          +
         </Button>
-      )}
+      </div>
       <Dialog
         visible={recordOpen}
         title="本轮专注记录"

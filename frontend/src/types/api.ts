@@ -27,6 +27,7 @@ export interface Member {
   extra_memberships?: string;
   status: "active" | "on_leave" | "graduated" | "left";
   privacy_level: "public" | "internal" | "private";
+  is_super_admin?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -192,6 +193,41 @@ export interface ProjectLog {
   paper_status?: string | null;
   notified_at?: string | null;
   approved_at?: string | null;
+  approval_mode?: "any" | "all" | null;
+  approvals?: ProjectLogApproval[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StageCheckItem {
+  stage_title: string;
+  item_text: string;
+  required: boolean;
+  from_template: boolean;
+  checked: boolean;
+  payload?: { checked?: boolean; text?: string; link?: string; memberOpenId?: string; members?: string[] } | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ProjectLogApproval {
+  approval_id: number;
+  approver_open_id: string;
+  approver_name?: string | null;
+  decision: "pending" | "approved" | "rejected" | "skipped";
+  comment?: string | null;
+  decided_at?: string | null;
+}
+
+export interface ApprovalRule {
+  rule_id: number;
+  project_category: string;
+  stage_title?: string | null;
+  mode: "any" | "all";
+  approver_open_ids: string[];
+  approver_names?: (string | null)[];
+  enabled: boolean;
+  created_by?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -237,6 +273,7 @@ export interface LarkChatTopicPreview {
 }
 
 export interface Project {
+  current_stage?: string | null;
   project_id: number;
   name: string;
   description: string | null;
@@ -344,4 +381,40 @@ export interface MemberWorkload {
   };
   tasks: MemberWorkloadTask[];
   recent_done_tasks: MemberWorkloadTask[];
+}
+
+export type PermissionRoleKey =
+  | "super_admin"
+  | "bu_minister"
+  | "bu_deputy"
+  | "department_minister"
+  | "department_deputy";
+
+export type PermissionScopeType = "global" | "bu" | "department";
+
+export interface PermissionRoleOption {
+  role_key: PermissionRoleKey;
+  label: string;
+  scope_type: PermissionScopeType;
+}
+
+export interface PermissionOptions {
+  business_units: string[];
+  departments: string[];
+  roles: PermissionRoleOption[];
+}
+
+export interface PermissionAssignment {
+  assignment_id: number;
+  member_open_id: string;
+  member_name?: string | null;
+  member_department?: string | null;
+  role_key: PermissionRoleKey;
+  role_label: string;
+  scope_type: PermissionScopeType;
+  scope_value?: string | null;
+  active: boolean;
+  assigned_by?: string | null;
+  created_at: string;
+  updated_at: string;
 }

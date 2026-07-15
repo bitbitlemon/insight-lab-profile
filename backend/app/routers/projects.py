@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
@@ -14,9 +14,47 @@ from app.deps import get_current_user
 from app.models import (
     Advising, AuditLog, Member, Paper, PaperMilestone, PIPELINE_STAGES,
     PointsLedger, Project, ProjectChat, ProjectChatMessage, ProjectChatTopic,
-    ProjectLog, ProjectMember, ProjectRelation, Task,
+    ProjectLog, ProjectLogApproval, ProjectMember, ProjectRelation,
+    ProjectStageCheck, StageChecklistTemplate, Task,
+)
+from app.routers.approval_rules import resolve_stage_approval_rule
+from app.services.stage_flow import (
+    SEVEN_STAGES,
+    advance_project_stage,
+    missing_required_checks,
+    project_category_from_tags,
 )
 from app.schemas.common import PageResponse
+try:
+    from app.permissions import (
+        SUPER_ADMIN_OPEN_IDS,
+        business_unit_text_variants,
+        member_business_unit_scopes,
+        member_can_manage_project_scope,
+        member_department_scopes,
+        member_is_super_admin_for_db,
+    )
+except ModuleNotFoundError:
+    SUPER_ADMIN_OPEN_IDS = {
+        "ou_20fec537961e0a66669370b00d0fc52d",
+        "ou_fa34ee4440459aee67a7c1b3aa3baf0d",
+        "ou_c544c4877658cfa1df6cee41939b99c4",
+    }
+
+    def business_unit_text_variants(values):
+        return set(values)
+
+    def member_business_unit_scopes(db, member):
+        return set()
+
+    def member_department_scopes(db, member):
+        return set()
+
+    def member_can_manage_project_scope(db, member, project):
+        return False
+
+    def member_is_super_admin_for_db(db, member):
+        return bool(member and (member.open_id in SUPER_ADMIN_OPEN_IDS or member.name in {"沈洁", "罗起宁", "秦振凯"}))
 from app.services.points_rules import RULES_VERSION
 from app.services.lark_im import notify_project_log, notify_project_member_added, notify_task_assigned
 from app.services.base_writer import mirror_to_base, delete_from_base
@@ -29,10 +67,6 @@ PPriority = Literal["low", "medium", "high", "urgent"]
 PType = Literal["personal", "team"]
 PMRole = Literal["owner", "co_lead", "member", "observer"]
 PRelationType = Literal["transformed_to", "derived", "related"]
-EQUAL_ACCESS_OPEN_IDS = {
-    "ou_20fec537961e0a66669370b00d0fc52d",  # 罗起宁
-    "ou_c544c4877658cfa1df6cee41939b99c4",  # 秦振凯
-}
 
 
 def _coerce_datetime(value):
@@ -97,8 +131,21 @@ class ProjectLogRead(BaseModel):
     paper_status: str | None = None
     notified_at: datetime | None = None
     approved_at: datetime | None = None
+    approval_mode: str | None = None
+    approvals: list["ProjectLogApprovalRead"] = []
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectLogApprovalRead(BaseModel):
+    approval_id: int
+    approver_open_id: str
+    approver_name: str | None = None
+    decision: Literal["pending", "approved", "rejected", "skipped"]
+    comment: str | None = None
+    decided_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -115,6 +162,8 @@ class ProjectLogCreate(BaseModel):
     paper_stage: PaperStage | None = None
     paper_status: PaperStatus | None = None
     milestone_status: MilestoneStatus | None = None
+    approver_open_ids: list[str] | None = None
+    approval_mode: Literal["any", "all"] | None = None
     notify_now: bool = True
 
 
@@ -148,6 +197,28 @@ class ProjectRelationRead(BaseModel):
 class ProjectLogDecision(BaseModel):
     approved: bool
     comment: str | None = None
+
+
+class StageCheckItemRead(BaseModel):
+    stage_title: str
+    item_text: str
+    required: bool = True
+    from_template: bool = True
+    checked: bool = False
+    payload: dict | None = None
+    updated_by: str | None = None
+    updated_at: datetime | None = None
+
+
+class StageCheckItemWrite(BaseModel):
+    stage_title: str
+    item_text: str
+    checked: bool = False
+    payload: dict | None = None
+
+
+class StageChecksWrite(BaseModel):
+    items: list[StageCheckItemWrite]
 
 
 class ProjectChatRead(BaseModel):
@@ -249,6 +320,7 @@ class LarkChatTopicPreviewPage(BaseModel):
 
 
 class ProjectRead(BaseModel):
+    current_stage: str | None = None
     project_id: int
     name: str
     description: str | None
@@ -286,6 +358,7 @@ class ProjectCreate(BaseModel):
     status: PStatus = "active"
     priority: PPriority = "medium"
     project_type: PType | None = None
+    owner_open_id: str | None = None
     department: str | None = None
     start_date: date | None = None
     target_end_date: datetime | None = None
@@ -305,6 +378,7 @@ class ProjectUpdate(BaseModel):
     status: PStatus | None = None
     priority: PPriority | None = None
     project_type: PType | None = None
+    owner_open_id: str | None = None
     department: str | None = None
     start_date: date | None = None
     target_end_date: datetime | None = None
@@ -318,7 +392,13 @@ class ProjectUpdate(BaseModel):
         return _coerce_datetime(value)
 
 
-def _serialize(p: Project, current: Member | None = None) -> ProjectRead:
+def _serialize(
+    p: Project,
+    current: Member | None = None,
+    *,
+    task_stats: dict[int, tuple[int, int]] | None = None,
+    chat_stats: dict[int, tuple[int, int]] | None = None,
+) -> ProjectRead:
     today = date.today()
     if p.start_date:
         end = p.actual_end_date.date() if p.actual_end_date else today
@@ -327,11 +407,15 @@ def _serialize(p: Project, current: Member | None = None) -> ProjectRead:
         days = 0
     pr = ProjectRead.model_validate(p)
     if current:
-        pr.my_project_type = "personal" if _active_member_open_ids(p) and current.open_id in _active_member_open_ids(p) else "team"
+        member_ids = _active_member_open_ids(p)
+        pr.my_project_type = "personal" if member_ids and current.open_id in member_ids else "team"
     pr.days_active = days
-    pr.task_count = len(p.tasks)
-    pr.task_done_count = sum(1 for t in p.tasks if t.status == "done")
-    pr.chats = [_serialize_chat(chat) for chat in getattr(p, "chats", [])]
+    if task_stats is not None:
+        pr.task_count, pr.task_done_count = task_stats.get(p.project_id, (0, 0))
+    else:
+        pr.task_count = len(getattr(p, "tasks", []) or [])
+        pr.task_done_count = sum(1 for t in getattr(p, "tasks", []) if t.status == "done")
+    pr.chats = [_serialize_chat(chat, chat_stats=chat_stats) for chat in getattr(p, "chats", [])]
     stale_chats = [chat for chat in pr.chats if chat.is_stale]
     pr.abnormal_chat_count = len(stale_chats)
     pr.is_abnormal = p.status in ("planning", "active") and bool(stale_chats)
@@ -345,10 +429,13 @@ def _active_member_open_ids(p: Project) -> set[str]:
     return {m.member_open_id for m in getattr(p, "members", []) if m.left_at is None}
 
 
-def _serialize_chat(chat: ProjectChat) -> ProjectChatRead:
+def _serialize_chat(chat: ProjectChat, *, chat_stats: dict[int, tuple[int, int]] | None = None) -> ProjectChatRead:
     item = ProjectChatRead.model_validate(chat)
-    item.topic_count = len(getattr(chat, "topics", []) or [])
-    item.message_count = len(getattr(chat, "messages", []) or [])
+    if chat_stats is not None:
+        item.topic_count, item.message_count = chat_stats.get(chat.project_chat_id, (0, 0))
+    else:
+        item.topic_count = len(getattr(chat, "topics", []) or [])
+        item.message_count = len(getattr(chat, "messages", []) or [])
     if chat.selected_topic_key:
         cutoff = datetime.now() - timedelta(hours=48)
         if not chat.latest_topic_reply_at:
@@ -360,6 +447,47 @@ def _serialize_chat(chat: ProjectChat) -> ProjectChatRead:
     return item
 
 
+def _project_task_stats(db: Session, project_ids: list[int]) -> dict[int, tuple[int, int]]:
+    if not project_ids:
+        return {}
+    rows = db.execute(
+        select(
+            Task.project_id,
+            func.count(Task.task_id),
+            func.sum(case((Task.status == "done", 1), else_=0)),
+        )
+        .where(Task.project_id.in_(project_ids))
+        .group_by(Task.project_id)
+    ).all()
+    return {int(project_id): (int(total or 0), int(done or 0)) for project_id, total, done in rows if project_id is not None}
+
+
+def _project_chat_stats(db: Session, project_ids: list[int]) -> dict[int, tuple[int, int]]:
+    if not project_ids:
+        return {}
+    chat_ids = db.execute(
+        select(ProjectChat.project_chat_id).where(ProjectChat.project_id.in_(project_ids))
+    ).scalars().all()
+    if not chat_ids:
+        return {}
+    stats = {int(chat_id): [0, 0] for chat_id in chat_ids}
+    topic_rows = db.execute(
+        select(ProjectChatTopic.project_chat_id, func.count(ProjectChatTopic.project_chat_topic_id))
+        .where(ProjectChatTopic.project_chat_id.in_(chat_ids))
+        .group_by(ProjectChatTopic.project_chat_id)
+    ).all()
+    for chat_id, total in topic_rows:
+        stats[int(chat_id)][0] = int(total or 0)
+    message_rows = db.execute(
+        select(ProjectChatMessage.project_chat_id, func.count(ProjectChatMessage.project_chat_message_id))
+        .where(ProjectChatMessage.project_chat_id.in_(chat_ids))
+        .group_by(ProjectChatMessage.project_chat_id)
+    ).all()
+    for chat_id, total in message_rows:
+        stats[int(chat_id)][1] = int(total or 0)
+    return {chat_id: (values[0], values[1]) for chat_id, values in stats.items()}
+
+
 def _is_department_privileged(current: Member) -> bool:
     return current.role in ("admin", "staff")
 
@@ -368,24 +496,24 @@ def _same_department(project: Project, current: Member) -> bool:
     return bool(project.department and current.department and project.department == current.department)
 
 
-def _has_equal_owner_access(project: Project, current: Member) -> bool:
-    return current.open_id in EQUAL_ACCESS_OPEN_IDS and project.owner_open_id in EQUAL_ACCESS_OPEN_IDS
+def _has_equal_owner_access(project: Project, current: Member, db: Session) -> bool:
+    return member_is_super_admin_for_db(db, current) and project.owner_open_id in SUPER_ADMIN_OPEN_IDS
 
 
-def _has_developer_project_view(current: Member) -> bool:
-    return current.open_id in EQUAL_ACCESS_OPEN_IDS
+def _has_developer_project_view(current: Member, db: Session) -> bool:
+    return member_is_super_admin_for_db(db, current)
 
 
-def _can_manage_project(p: Project, current: Member) -> bool:
-    return p.owner_open_id == current.open_id or _has_equal_owner_access(p, current) or (
+def _can_manage_project(p: Project, current: Member, db: Session) -> bool:
+    return _has_developer_project_view(current, db) or p.owner_open_id == current.open_id or _has_equal_owner_access(p, current, db) or (
         p.project_type == "team" and _is_department_privileged(current) and _same_department(p, current)
-    )
+    ) or member_can_manage_project_scope(db, current, p)
 
 
 def _can_view_project(p: Project, current: Member, db: Session) -> bool:
-    if _has_developer_project_view(current):
+    if _has_developer_project_view(current, db):
         return True
-    if _can_manage_project(p, current):
+    if _can_manage_project(p, current, db):
         return True
     membership = db.get(ProjectMember, (p.project_id, current.open_id))
     return membership is not None and membership.left_at is None
@@ -456,6 +584,27 @@ def _serialize_project_log(row: ProjectLog, db: Session) -> ProjectLogRead:
     item.approver_name = _member_name(db, row.approver_open_id)
     item.kind_label = LOG_KIND_LABEL.get(row.kind, row.kind)
     item.status_label = LOG_STATUS_LABEL.get(row.status, row.status)
+    if row.extra_json:
+        try:
+            item.approval_mode = json.loads(row.extra_json).get("approval_mode")
+        except Exception:
+            pass
+    approval_rows = db.execute(
+        select(ProjectLogApproval)
+        .where(ProjectLogApproval.log_id == row.log_id)
+        .order_by(ProjectLogApproval.approval_id)
+    ).scalars().all()
+    item.approvals = [
+        ProjectLogApprovalRead(
+            approval_id=a.approval_id,
+            approver_open_id=a.approver_open_id,
+            approver_name=_member_name(db, a.approver_open_id),
+            decision=a.decision,
+            comment=a.comment,
+            decided_at=a.decided_at,
+        )
+        for a in approval_rows
+    ]
     return item
 
 
@@ -494,6 +643,34 @@ def _guidance_approver(db: Session, advisor_open_id: str | None) -> str | None:
         .limit(1)
     ).scalar_one_or_none()
     return row.advisor_open_id if row else None
+
+
+def _resolve_stage_approvers(db: Session, project: Project, payload: "ProjectLogCreate") -> tuple[list[str], str]:
+    """解析阶段审批的审批人列表和方式: 显式传入 > 审批规则 > 项目 owner。"""
+    approvers: list[str] = []
+    mode = payload.approval_mode
+    if payload.approver_open_ids:
+        seen: set[str] = set()
+        for oid in payload.approver_open_ids:
+            oid = str(oid).strip()
+            if not oid or oid in seen:
+                continue
+            if not db.get(Member, oid):
+                raise HTTPException(400, f"审批人不存在: {oid}")
+            seen.add(oid)
+            approvers.append(oid)
+    if not approvers:
+        rule = resolve_stage_approval_rule(db, project.tags, payload.old_value)
+        if rule:
+            candidate = [oid for oid in json.loads(rule.approver_open_ids or "[]") if db.get(Member, oid)]
+            if candidate:
+                approvers = candidate
+                mode = mode or rule.mode
+    if not approvers:
+        fallback = payload.target_open_id or project.owner_open_id
+        if fallback:
+            approvers = [fallback]
+    return approvers, (mode or "any")
 
 
 def _ensure_paper_milestone(db: Session, paper_id: int, stage: str, owner_open_id: str) -> PaperMilestone:
@@ -564,9 +741,7 @@ def list_projects(
 ):
     stmt = select(Project).options(
         selectinload(Project.members),
-        selectinload(Project.tasks),
-        selectinload(Project.chats).selectinload(ProjectChat.topics),
-        selectinload(Project.chats).selectinload(ProjectChat.messages),
+        selectinload(Project.chats),
     )
     count_stmt = select(func.count()).select_from(Project)
     member_projects = select(ProjectMember.project_id).where(
@@ -577,11 +752,17 @@ def list_projects(
         Project.owner_open_id == current.open_id,
         Project.project_id.in_(member_projects),
     ]
-    if current.open_id in EQUAL_ACCESS_OPEN_IDS:
-        visibility.append(Project.owner_open_id.in_(EQUAL_ACCESS_OPEN_IDS))
+    if member_is_super_admin_for_db(db, current):
+        visibility.append(Project.owner_open_id.in_(SUPER_ADMIN_OPEN_IDS))
     if _is_department_privileged(current) and current.department:
         visibility.append(and_(Project.department == current.department, Project.project_type == "team"))
-    if not _has_developer_project_view(current):
+    bu_departments = business_unit_text_variants(member_business_unit_scopes(db, current))
+    if bu_departments:
+        visibility.append(Project.department.in_(bu_departments))
+    managed_departments = member_department_scopes(db, current)
+    if managed_departments:
+        visibility.append(Project.department.in_(managed_departments))
+    if not _has_developer_project_view(current, db):
         stmt = stmt.where(or_(*visibility))
         count_stmt = count_stmt.where(or_(*visibility))
     if status:
@@ -606,9 +787,12 @@ def list_projects(
         count_stmt = count_stmt.where(cond)
     stmt = stmt.order_by(Project.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
     items = db.execute(stmt).scalars().all()
+    project_ids = [p.project_id for p in items]
+    task_stats = _project_task_stats(db, project_ids)
+    chat_stats = _project_chat_stats(db, project_ids)
     total = db.execute(count_stmt).scalar_one()
     return PageResponse[ProjectRead](
-        items=[_serialize(p, current) for p in items],
+        items=[_serialize(p, current, task_stats=task_stats, chat_stats=chat_stats) for p in items],
         total=total, page=page, page_size=page_size,
     )
 
@@ -665,9 +849,7 @@ def get_project(
     p = db.execute(
         select(Project).options(
             selectinload(Project.members),
-            selectinload(Project.tasks),
-            selectinload(Project.chats).selectinload(ProjectChat.topics),
-            selectinload(Project.chats).selectinload(ProjectChat.messages),
+            selectinload(Project.chats),
         )
         .where(Project.project_id == project_id)
     ).scalar_one_or_none()
@@ -675,7 +857,12 @@ def get_project(
         raise HTTPException(404, "project not found")
     if not _can_view_project(p, current, db):
         raise HTTPException(403, "无权查看")
-    return _serialize(p, current)
+    return _serialize(
+        p,
+        current,
+        task_stats=_project_task_stats(db, [p.project_id]),
+        chat_stats=_project_chat_stats(db, [p.project_id]),
+    )
 
 
 @router.get("/{project_id}/audit", response_model=list[ChangeLogRead])
@@ -764,7 +951,7 @@ def create_project_relation(
         raise HTTPException(404, "project not found")
     if p.project_id == target.project_id:
         raise HTTPException(400, "不能关联项目自身")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅项目负责人 / 管理员可关联项目")
     if not _can_view_project(target, current, db):
         raise HTTPException(403, "无权查看目标项目")
@@ -843,7 +1030,7 @@ def delete_project_relation(
         raise HTTPException(404, "project relation not found")
     source = db.get(Project, row.source_project_id)
     target = db.get(Project, row.target_project_id)
-    manageable = (source and _can_manage_project(source, current)) or (target and _can_manage_project(target, current))
+    manageable = (source and _can_manage_project(source, current, db)) or (target and _can_manage_project(target, current, db))
     if not manageable:
         raise HTTPException(403, "仅项目负责人 / 管理员可取消项目关联")
     label = RELATION_TYPE_LABEL.get(row.relation_type, row.relation_type)
@@ -874,13 +1061,23 @@ def create_project_log(
 
     extra = _apply_paper_transition(db, payload, current)
     approver_open_id = _guidance_approver(db, payload.target_open_id) if payload.kind == "guidance" else None
+    target_open_id = payload.target_open_id
     status_value = "recorded"
     if payload.kind in ("guidance", "server"):
+        status_value = "pending_approval" if approver_open_id else "pending"
+    stage_approvers: list[str] = []
+    approval_mode: str | None = None
+    if payload.kind == "paper_stage" and payload.resource_type == "stage_approval":
+        missing = missing_required_checks(db, p, payload.old_value)
+        if missing:
+            raise HTTPException(400, "阶段检查项未完成: " + "、".join(missing))
+        stage_approvers, approval_mode = _resolve_stage_approvers(db, p, payload)
+        approver_open_id = stage_approvers[0] if stage_approvers else (payload.target_open_id or p.owner_open_id)
+        target_open_id = payload.target_open_id or p.owner_open_id
         status_value = "pending_approval" if approver_open_id else "pending"
     elif payload.notify_now:
         status_value = "notified" if payload.kind == "notification" else status_value
 
-    target_open_id = payload.target_open_id
     if payload.kind == "server" and not target_open_id:
         target_open_id = p.owner_open_id
 
@@ -901,9 +1098,35 @@ def create_project_log(
         paper_status=payload.paper_status,
         extra_json=json.dumps(extra, ensure_ascii=False) if extra else None,
     )
+    if approval_mode and len(stage_approvers) > 1:
+        extra["approval_mode"] = approval_mode
+        row.extra_json = json.dumps(extra, ensure_ascii=False)
     db.add(row)
+    db.flush()
+    for oid in stage_approvers:
+        db.add(ProjectLogApproval(log_id=row.log_id, approver_open_id=oid))
     db.commit()
     db.refresh(row)
+
+    if payload.notify_now and stage_approvers:
+        notified = False
+        for oid in stage_approvers:
+            if notify_project_log(
+                oid,
+                project_name=p.name,
+                title=row.title,
+                body=row.body,
+                actor_name=current.name,
+                action_label="项目阶段待审批",
+                project_id=p.project_id,
+                log_id=row.log_id,
+            ):
+                notified = True
+        if notified:
+            row.notified_at = datetime.utcnow()
+            db.commit()
+            db.refresh(row)
+        return _serialize_project_log(row, db)
 
     if payload.notify_now:
         recipient = row.approver_open_id or row.target_open_id
@@ -977,21 +1200,65 @@ def decide_project_log(
     row = db.get(ProjectLog, log_id)
     if not p or not row or row.project_id != project_id:
         raise HTTPException(404, "project log not found")
-    if row.approver_open_id != current.open_id and not _can_manage_project(p, current):
-        raise HTTPException(403, "无权审批")
-    row.status = "approved" if payload.approved else "rejected"
-    row.approved_at = datetime.utcnow()
+    approval_rows = db.execute(
+        select(ProjectLogApproval)
+        .where(ProjectLogApproval.log_id == row.log_id)
+        .order_by(ProjectLogApproval.approval_id)
+    ).scalars().all()
     extra = {}
     if row.extra_json:
         try:
             extra = json.loads(row.extra_json)
         except Exception:
             extra = {}
-    if payload.comment:
-        extra["decision_comment"] = payload.comment
-        row.extra_json = json.dumps(extra, ensure_ascii=False)
-    db.commit()
-    db.refresh(row)
+    if approval_rows:
+        # 多审批人: 只能决策自己的行; all=会签需全员通过, any=或签一人通过即可; 任一驳回立即驳回
+        mine = next((a for a in approval_rows if a.approver_open_id == current.open_id), None)
+        if mine is None:
+            raise HTTPException(403, "仅指定审批人可审批")
+        if row.status in ("approved", "rejected"):
+            raise HTTPException(400, "该审批已结束")
+        if mine.decision != "pending":
+            raise HTTPException(400, "你已提交过审批意见")
+        mine.decision = "approved" if payload.approved else "rejected"
+        mine.comment = payload.comment
+        mine.decided_at = datetime.utcnow()
+        mode = extra.get("approval_mode") or "any"
+        if not payload.approved:
+            row.status = "rejected"
+            row.approved_at = datetime.utcnow()
+        elif mode == "all":
+            if all(a.decision == "approved" for a in approval_rows):
+                row.status = "approved"
+                row.approved_at = datetime.utcnow()
+        else:
+            row.status = "approved"
+            row.approved_at = datetime.utcnow()
+            for other in approval_rows:
+                if other.decision == "pending":
+                    other.decision = "skipped"
+        if payload.comment:
+            extra.setdefault("decision_comments", {})[current.open_id] = payload.comment
+            extra["decision_comment"] = payload.comment
+            row.extra_json = json.dumps(extra, ensure_ascii=False)
+        if row.status == "approved" and row.resource_type == "stage_approval":
+            advance_project_stage(db, p, row, current.open_id)
+        db.commit()
+        db.refresh(row)
+        if row.status == "pending_approval":
+            return _serialize_project_log(row, db)
+    else:
+        if row.approver_open_id != current.open_id and not _can_manage_project(p, current, db):
+            raise HTTPException(403, "无权审批")
+        row.status = "approved" if payload.approved else "rejected"
+        row.approved_at = datetime.utcnow()
+        if payload.comment:
+            extra["decision_comment"] = payload.comment
+            row.extra_json = json.dumps(extra, ensure_ascii=False)
+        if row.status == "approved" and row.resource_type == "stage_approval":
+            advance_project_stage(db, p, row, current.open_id)
+        db.commit()
+        db.refresh(row)
     if payload.approved and row.target_open_id:
         notify_project_log(
             row.target_open_id,
@@ -1004,6 +1271,109 @@ def decide_project_log(
             log_id=row.log_id,
         )
     return _serialize_project_log(row, db)
+
+
+@router.get("/{project_id}/stage-checks", response_model=list[StageCheckItemRead])
+def list_stage_checks(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_user),
+):
+    p = db.get(Project, project_id)
+    if not p:
+        raise HTTPException(404, "project not found")
+    if not _can_view_project(p, current, db):
+        raise HTTPException(403, "无权查看")
+    category = project_category_from_tags(p.tags)
+    templates = []
+    if category:
+        templates = db.execute(
+            select(StageChecklistTemplate).where(
+                StageChecklistTemplate.project_category == category,
+                StageChecklistTemplate.enabled.is_(True),
+            ).order_by(StageChecklistTemplate.stage_title, StageChecklistTemplate.sort_order)
+        ).scalars().all()
+    saved = db.execute(
+        select(ProjectStageCheck).where(ProjectStageCheck.project_id == project_id)
+    ).scalars().all()
+    saved_map = {(r.stage_title, r.item_text): r for r in saved}
+    items: list[StageCheckItemRead] = []
+    seen: set[tuple[str, str]] = set()
+    for t in templates:
+        key = (t.stage_title, t.item_text)
+        seen.add(key)
+        row = saved_map.get(key)
+        payload = None
+        if row and row.payload_json:
+            try:
+                payload = json.loads(row.payload_json)
+            except Exception:
+                payload = None
+        items.append(StageCheckItemRead(
+            stage_title=t.stage_title,
+            item_text=t.item_text,
+            required=t.required,
+            from_template=True,
+            checked=bool(row.checked) if row else False,
+            payload=payload,
+            updated_by=row.updated_by if row else None,
+            updated_at=row.updated_at if row else None,
+        ))
+    for row in saved:
+        key = (row.stage_title, row.item_text)
+        if key in seen:
+            continue
+        payload = None
+        if row.payload_json:
+            try:
+                payload = json.loads(row.payload_json)
+            except Exception:
+                payload = None
+        items.append(StageCheckItemRead(
+            stage_title=row.stage_title,
+            item_text=row.item_text,
+            required=False,
+            from_template=False,
+            checked=row.checked,
+            payload=payload,
+            updated_by=row.updated_by,
+            updated_at=row.updated_at,
+        ))
+    return items
+
+
+@router.put("/{project_id}/stage-checks", response_model=list[StageCheckItemRead])
+def save_stage_checks(
+    project_id: int,
+    payload: StageChecksWrite,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_user),
+):
+    p = db.get(Project, project_id)
+    if not p:
+        raise HTTPException(404, "project not found")
+    if not _can_view_project(p, current, db):
+        raise HTTPException(403, "无权查看")
+    for item in payload.items:
+        stage_title = item.stage_title.strip()
+        item_text = item.item_text.strip()
+        if not stage_title or not item_text:
+            continue
+        row = db.execute(
+            select(ProjectStageCheck).where(
+                ProjectStageCheck.project_id == project_id,
+                ProjectStageCheck.stage_title == stage_title,
+                ProjectStageCheck.item_text == item_text,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = ProjectStageCheck(project_id=project_id, stage_title=stage_title, item_text=item_text)
+            db.add(row)
+        row.checked = bool(item.checked)
+        row.payload_json = json.dumps(item.payload, ensure_ascii=False) if item.payload else None
+        row.updated_by = current.open_id
+    db.commit()
+    return list_stage_checks(project_id, db, current)
 
 
 def _project_fields_for_base(p: Project) -> dict:
@@ -1031,23 +1401,27 @@ async def create_project(
     project_type = payload.project_type or ("team" if payload.members else "personal")
     if project_type == "personal" and payload.members:
         raise HTTPException(400, "个人项目只包含创建者本人；多人协作请改为团队项目")
+    explicit_owner = bool(payload.owner_open_id and payload.owner_open_id.strip())
+    owner_open_id = (payload.owner_open_id or current.open_id).strip()
+    if not db.get(Member, owner_open_id):
+        raise HTTPException(400, "负责人不存在")
     p = Project(
         name=payload.name, description=payload.description,
         status=payload.status, priority=payload.priority, project_type=project_type,
         publication_status="draft",
-        owner_open_id=current.open_id, department=payload.department or current.department,
+        owner_open_id=owner_open_id, department=payload.department or current.department,
         start_date=payload.start_date or date.today(),
         target_end_date=payload.target_end_date, tags=payload.tags,
         points_awarded=payload.points_awarded, created_by=current.open_id,
     )
     db.add(p); db.flush()
     added_members: list[tuple[str, PMRole]] = []
-    if project_type == "personal":
-        db.add(ProjectMember(project_id=p.project_id, member_open_id=current.open_id, role="owner", share_ratio=0.0))
-        added_members.append((current.open_id, "owner"))
+    if project_type == "personal" or explicit_owner:
+        db.add(ProjectMember(project_id=p.project_id, member_open_id=owner_open_id, role="owner", share_ratio=0.0))
+        added_members.append((owner_open_id, "owner"))
     for m in payload.members:
         oid = m.get("member_open_id")
-        if not oid or oid == current.open_id: continue
+        if not oid or oid == owner_open_id: continue
         db.add(ProjectMember(
             project_id=p.project_id, member_open_id=oid,
             role="member",
@@ -1080,7 +1454,7 @@ def publish_project(
     ).scalar_one_or_none()
     if not p:
         raise HTTPException(404, "not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅 owner / admin / staff 可发布")
     already_published = p.publication_status == "published"
     p.publication_status = "published"
@@ -1111,7 +1485,7 @@ def publish_project(
     db.refresh(p)
     if not already_published:
         for member in p.members:
-            if member.left_at:
+            if member.left_at or member.role == "owner":
                 continue
             notify_project_member_added(
                 member_open_id=member.member_open_id,
@@ -1213,6 +1587,25 @@ def _project_update_log_body(changes: dict[str, tuple[object, object]]) -> str:
     )
 
 
+def _detach_project_archive_references(db: Session, project_id: int) -> None:
+    """Keep archive records, but remove project FK links that block project deletion."""
+    reference_fields = [
+        ("ai_chat_submissions", "matched_project_id"),
+        ("calendar_events", "related_project_id"),
+        ("competitions", "project_id"),
+        ("contributions", "project_id"),
+        ("lab_reservations", "related_project_id"),
+        ("lark_base_chat_messages", "matched_project_id"),
+        ("lark_doc_watches", "matched_project_id"),
+        ("papers", "project_id"),
+    ]
+    for table, column in reference_fields:
+        db.execute(
+            text(f"UPDATE {table} SET {column}=NULL WHERE {column}=:project_id"),
+            {"project_id": project_id},
+        )
+
+
 @router.patch("/{project_id}", response_model=ProjectRead)
 async def update_project(
     project_id: int,
@@ -1223,21 +1616,38 @@ async def update_project(
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(404, "not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅 owner / admin / staff 可编辑")
     old_status = p.status
     data = payload.model_dump(exclude_unset=True)
     tracked_changes: dict[str, tuple[object, object]] = {}
+    next_owner_open_id = data.get("owner_open_id")
+    if next_owner_open_id:
+        next_owner_open_id = str(next_owner_open_id).strip()
+        if not db.get(Member, next_owner_open_id):
+            raise HTTPException(400, "负责人不存在")
+        data["owner_open_id"] = next_owner_open_id
     if data.get("project_type") == "personal":
         has_members = db.execute(
             select(ProjectMember.project_id).where(
                 ProjectMember.project_id == project_id,
-                ProjectMember.member_open_id != p.owner_open_id,
+                ProjectMember.member_open_id != (next_owner_open_id or p.owner_open_id),
                 ProjectMember.left_at.is_(None),
             ).limit(1)
         ).first()
         if has_members:
             raise HTTPException(400, "已有参与者的项目不能切换为个人项目")
+    if next_owner_open_id and next_owner_open_id != p.owner_open_id:
+        old_owner = db.get(ProjectMember, (project_id, p.owner_open_id))
+        if old_owner and old_owner.role == "owner":
+            old_owner.role = "member"
+        next_owner = db.get(ProjectMember, (project_id, next_owner_open_id))
+        if next_owner:
+            next_owner.role = "owner"
+            next_owner.left_at = None
+        else:
+            db.add(ProjectMember(project_id=project_id, member_open_id=next_owner_open_id, role="owner", share_ratio=0.0))
+    elif data.get("project_type") == "personal":
         if not db.get(ProjectMember, (project_id, p.owner_open_id)):
             db.add(ProjectMember(project_id=project_id, member_open_id=p.owner_open_id, role="owner", share_ratio=0.0))
     for k, v in data.items():
@@ -1294,9 +1704,10 @@ async def delete_project(
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(404, "not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅项目负责人 / 同部门管理员可删除")
     base_rid = p.base_record_id
+    _detach_project_archive_references(db, project_id)
     db.query(PointsLedger).filter(
         PointsLedger.source_type == "adjust", PointsLedger.source_id == project_id,
     ).delete(synchronize_session=False)
@@ -1346,7 +1757,7 @@ def add_member(
 ):
     p = db.get(Project, project_id)
     if not p: raise HTTPException(404, "project not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅 owner 可加成员")
     if p.project_type == "personal":
         p.project_type = "team"
@@ -1389,7 +1800,7 @@ def notify_project_member_again(
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(404, "project not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅项目负责人 / 同部门管理员可提醒")
     pm = db.get(ProjectMember, (project_id, member_open_id))
     if not pm or pm.left_at:
@@ -1415,7 +1826,7 @@ def update_member(
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(404, "project not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅项目负责人 / 同部门管理员可编辑成员")
     pm = db.get(ProjectMember, (project_id, member_open_id))
     if not pm or pm.left_at:
@@ -1436,7 +1847,7 @@ def remove_member(
 ):
     p = db.get(Project, project_id)
     if not p: raise HTTPException(404, "project not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403)
     pm = db.get(ProjectMember, (project_id, member_open_id))
     if not pm: raise HTTPException(404, "member not found")
@@ -1450,7 +1861,7 @@ def _get_project_for_chat_action(db: Session, project_id: int, current: Member) 
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(404, "project not found")
-    if not _can_manage_project(p, current):
+    if not _can_manage_project(p, current, db):
         raise HTTPException(403, "仅项目负责人 / admin / staff 可管理关联群聊")
     return p
 

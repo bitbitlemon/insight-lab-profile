@@ -60,6 +60,37 @@ TABLE_FIELD_MAP: dict[str, dict[str, str]] = {
         "比赛证书": "cert_files_json",
         "比赛照片": "photo_files_json",
     },
+    "projects": {
+        "项目名称": "name",
+        "项目描述": "description",
+        "项目状态": "status",
+        "优先级": "priority",
+        "负责人": "owner_open_id",
+        "负责人 open_id": "owner_open_id",
+        "部门": "department",
+        "开始日期": "start_date",
+        "目标结束日期": "target_end_date",
+        "实际结束日期": "actual_end_date",
+        "标签": "tags",
+        "积分": "points_awarded",
+    },
+    "tasks": {
+        "所属项目": "project_id",
+        "项目 ID": "project_id",
+        "任务标题": "title",
+        "任务描述": "description",
+        "任务状态": "status",
+        "优先级": "priority",
+        "负责人": "assignee_open_id",
+        "负责人 open_id": "assignee_open_id",
+        "计划开始时间": "planned_start_date",
+        "截止时间": "due_date",
+        "今日待办日期": "today_todo_date",
+        "今日思路": "thinking",
+        "进展草稿": "progress_draft",
+        "任务来源": "task_origin",
+        "收到时间": "received_at",
+    },
 }
 
 
@@ -137,6 +168,16 @@ def _unmarshal_field(value: Any, py_type: type | None) -> Any:
         return datetime.fromtimestamp(value / 1000)
     if py_type in (date,) and isinstance(value, (int, float)):
         return datetime.fromtimestamp(value / 1000).date()
+    if py_type in (datetime,) and isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if py_type in (date,) and isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text[:10]).date()
     return value
 
 
@@ -148,6 +189,46 @@ def _orm_attr_python_type(orm_cls: type, attr: str) -> type | None:
         return col.type.python_type
     except NotImplementedError:
         return None
+
+
+def _normalize_project_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
+    if not kwargs.get("name"):
+        raise ValueError("project name is required")
+    owner_open_id = (kwargs.get("owner_open_id") or kwargs.get("created_by") or "").strip()
+    if not owner_open_id:
+        raise ValueError("project owner_open_id is required")
+    kwargs["owner_open_id"] = owner_open_id
+    kwargs["created_by"] = kwargs.get("created_by") or owner_open_id
+    kwargs["status"] = kwargs.get("status") or "planning"
+    kwargs["priority"] = kwargs.get("priority") or "medium"
+    kwargs["project_type"] = kwargs.get("project_type") or "team"
+    kwargs["publication_status"] = kwargs.get("publication_status") or "published"
+    kwargs["points_awarded"] = float(kwargs.get("points_awarded") or 0)
+    return kwargs
+
+
+def _normalize_task_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
+    if not kwargs.get("title"):
+        raise ValueError("task title is required")
+    creator = (kwargs.get("created_by") or kwargs.get("assignee_open_id") or "").strip()
+    if not creator:
+        raise ValueError("task created_by or assignee_open_id is required")
+    kwargs["created_by"] = creator
+    kwargs["status"] = kwargs.get("status") or "todo"
+    kwargs["priority"] = kwargs.get("priority") or "medium"
+    kwargs["publication_status"] = kwargs.get("publication_status") or "published"
+    kwargs["task_origin"] = kwargs.get("task_origin") or "base_sync"
+    if kwargs.get("project_id") in ("", 0):
+        kwargs["project_id"] = None
+    return kwargs
+
+
+def _normalize_sync_payload(table_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    if table_name == "projects":
+        return _normalize_project_payload(kwargs)
+    if table_name == "tasks":
+        return _normalize_task_payload(kwargs)
+    return kwargs
 
 
 # ====================== Base → SQLite ======================
@@ -195,16 +276,25 @@ async def sync_table_from_base(db: Session, table_name: str, orm_cls: type, sett
                 kwargs[orm_key] = _unmarshal_field(v, _orm_attr_python_type(orm_cls, orm_key))
             except Exception:
                 errors += 1
-        existing = db.execute(select(orm_cls).where(orm_cls.base_record_id == record_id)).scalar_one_or_none()
         try:
-            if existing:
-                for k, v in kwargs.items():
-                    if k != "base_record_id":
-                        setattr(existing, k, v)
-            else:
-                db.add(orm_cls(**kwargs))
+            kwargs = _normalize_sync_payload(table_name, kwargs)
+        except Exception:
+            log.exception("[sync] %s record %s normalize failed", table_name, record_id)
+            errors += 1
+            continue
+        try:
+            with db.begin_nested():
+                existing = db.execute(select(orm_cls).where(orm_cls.base_record_id == record_id)).scalar_one_or_none()
+                if existing:
+                    for k, v in kwargs.items():
+                        if k != "base_record_id":
+                            setattr(existing, k, v)
+                else:
+                    db.add(orm_cls(**kwargs))
+                db.flush()
             upserts += 1
         except Exception:
+            log.exception("[sync] %s record %s upsert failed", table_name, record_id)
             errors += 1
     db.commit()
 
@@ -231,6 +321,21 @@ async def sync_all_from_base(db: Session) -> list[dict]:
         except Exception as e:
             r = {"table": name, "error": str(e)}
         results.append(r)
+    return results
+
+
+async def sync_projects_from_base(db: Session) -> list[dict]:
+    """同步项目中心所需数据，供上线前或管理员手动刷新使用。"""
+    targets = [
+        ("projects", Project, "lark_table_projects"),
+        ("tasks", Task, "lark_table_tasks"),
+    ]
+    results = []
+    for name, cls, attr in targets:
+        try:
+            results.append(await sync_table_from_base(db, name, cls, attr))
+        except Exception as e:
+            results.append({"table": name, "error": str(e)})
     return results
 
 

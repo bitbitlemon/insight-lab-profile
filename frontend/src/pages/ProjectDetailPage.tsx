@@ -42,6 +42,7 @@ import {
   sectionCardStyle,
 } from "../components/ui";
 import { useAuth } from "../hooks/useAuth";
+import { projectWorkbenchPath } from "../utils/projectNavigation";
 import type {
   LarkChatTopicPreview,
   LarkVisibleChat,
@@ -1897,7 +1898,7 @@ const ProjectDetailPage = () => {
                           </div>
                         ) : null}
                         <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <Button size="mini" fill="outline" onClick={() => navigate(`/projects/${relation.project_id}`)}>
+                          <Button size="mini" fill="outline" onClick={() => navigate(projectWorkbenchPath(relation.project_id))}>
                             查看项目
                           </Button>
                           {canManageProject ? (

@@ -134,6 +134,27 @@ def _task_overdue_reminder_job():
         db.close()
 
 
+def _sync_lark_doc_watches_job():
+    """Poll watched Feishu docs; changed docs create a new short project log."""
+    from .ai_chat_ingest import sync_lark_doc_watches
+
+    db = SessionLocal()
+    try:
+        sync_lark_doc_watches(db, limit=20)
+    finally:
+        db.close()
+
+
+def _sync_lark_base_chat_sources_job():
+    from .lark_base_chat_sync import sync_lark_base_chat_sources
+
+    db = SessionLocal()
+    try:
+        sync_lark_base_chat_sources(db, limit_sources=3)
+    finally:
+        db.close()
+
+
 def start_scheduler():
     if scheduler.running:
         return
@@ -166,6 +187,16 @@ def start_scheduler():
         _sync_class_schedules_job,
         IntervalTrigger(minutes=30),
         id="sync_class_schedules_from_lark", replace_existing=True,
+    )
+    scheduler.add_job(
+        _sync_lark_doc_watches_job,
+        IntervalTrigger(minutes=15),
+        id="sync_lark_doc_watches", replace_existing=True,
+    )
+    scheduler.add_job(
+        _sync_lark_base_chat_sources_job,
+        IntervalTrigger(minutes=20),
+        id="sync_lark_base_chat_sources", replace_existing=True,
     )
     # 待办通报自动发送先停用；保留卡片构建/回执代码，方便后续手动或重新启用。
     from .chat_cards import sync_and_extract_all_chats

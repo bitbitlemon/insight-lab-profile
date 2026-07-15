@@ -22,6 +22,8 @@ export interface TaskPayload {
   today_todo_date?: string | null;
   thinking?: string | null;
   progress_draft?: string | null;
+  helper_open_ids?: string | null;
+  mentor_open_ids?: string | null;
   task_origin?: string;
 }
 
@@ -34,6 +36,27 @@ export interface TaskFocusPayload {
 export interface TaskFocusSummary {
   task_id: number;
   total_seconds: number;
+}
+
+export interface TaskFeedback {
+  feedback_id: number;
+  task_id: number;
+  project_id?: number | null;
+  reporter_open_id: string;
+  reporter_name?: string | null;
+  content: string;
+  status: string;
+  created_at: string;
+}
+
+export interface SystemFeedback {
+  feedback_id: number;
+  reporter_open_id: string;
+  reporter_name?: string | null;
+  content: string;
+  page_url?: string | null;
+  status: string;
+  created_at: string;
 }
 
 export const listTasks = async (params?: ListTasksParams): Promise<Page<Task>> => {
@@ -82,6 +105,16 @@ export const createTodayTasksFromThinking = async (payload: {
 
 export const getTaskFocusSummary = async (taskId: number | string): Promise<TaskFocusSummary> => {
   const { data } = await api.get<TaskFocusSummary>(`/tasks/${taskId}/focus/summary`);
+  return data;
+};
+
+export const createTaskFeedback = async (taskId: number | string, content: string): Promise<TaskFeedback> => {
+  const { data } = await api.post<TaskFeedback>(`/tasks/${taskId}/feedback`, { content });
+  return data;
+};
+
+export const createSystemFeedback = async (content: string, pageUrl?: string | null): Promise<SystemFeedback> => {
+  const { data } = await api.post<SystemFeedback>("/tasks/feedback", { content, page_url: pageUrl || null });
   return data;
 };
 

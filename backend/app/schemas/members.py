@@ -67,5 +67,6 @@ class MemberRead(BaseModel):
     extra_memberships: str | None = None
     status: Literal["active", "on_leave", "graduated", "left"]
     privacy_level: Literal["public", "internal", "private"]
+    is_super_admin: bool = False
     created_at: datetime
     updated_at: datetime

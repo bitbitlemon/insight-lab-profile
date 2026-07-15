@@ -17,10 +17,27 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ..models import Member, MeetingNote
+from ..config import settings
 from .lark import get_lark
 from ..config import settings
 
-LARK_CLI = "/home/ubuntu/.npm-global/bin/lark-cli"
+import os as _os
+import shutil as _shutil
+
+
+def _resolve_lark_cli() -> str:
+    for candidate in (
+        _os.getenv("LARK_CLI_PATH"),
+        "/usr/local/bin/lark-cli",
+        "/home/ubuntu/.npm-global/bin/lark-cli",
+        "/home/ubuntu/.npm-global/lib/node_modules/@larksuite/cli/bin/lark-cli",
+    ):
+        if candidate and _os.path.exists(candidate):
+            return candidate
+    return _shutil.which("lark-cli") or "lark-cli"
+
+
+LARK_CLI = _resolve_lark_cli()
 
 
 def _run_cli(args: list[str], timeout: int = 60) -> dict:
@@ -144,6 +161,8 @@ def create_auto_minute_drafts(db: Session, minute_token: str, fetched: dict) -> 
 
 async def notify_owners_card(owners: list[str], title: str, app_base_url: str = "https://example.invalid") -> dict:
     """对每人发飞书卡片提醒补心得. 返回 {sent, failed}"""
+    if not settings.notifications_enabled:
+        return {"sent": 0, "failed": 0, "skipped": "notifications_disabled"}
     if not owners:
         return {"sent": 0, "failed": 0}
     lark = get_lark()

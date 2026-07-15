@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, time, timedelta
 from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -11,7 +11,17 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import AuditLog, Member, Project, ProjectLog, ProjectMember, Task
+from app.models import AuditLog, Member, Project, ProjectLog, ProjectMember, SystemFeedback, Task, TaskFeedback
+from starlette.concurrency import run_in_threadpool
+
+from app.services.lark_task import create_lark_task, delete_lark_task, set_lark_task_completed
+from app.permissions import (
+    business_unit_text_variants,
+    member_business_unit_scopes,
+    member_can_manage_project_scope,
+    member_department_scopes,
+    member_is_super_admin_for_db,
+)
 from app.schemas.common import PageResponse
 from app.services.lark_im import notify_focus_heartbeat, notify_task_assigned, notify_task_completed
 from app.services.base_writer import mirror_to_base, delete_from_base
@@ -69,10 +79,6 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 TStatus = Literal["todo", "in_progress", "done", "blocked", "cancelled"]
 TPriority = Literal["low", "medium", "high", "urgent"]
-EQUAL_ACCESS_OPEN_IDS = {
-    "ou_20fec537961e0a66669370b00d0fc52d",  # 罗起宁
-    "ou_c544c4877658cfa1df6cee41939b99c4",  # 秦振凯
-}
 
 
 def _coerce_datetime(value):
@@ -86,6 +92,9 @@ def _coerce_datetime(value):
 
 
 class TaskRead(BaseModel):
+    helper_open_ids: str | None = None
+    mentor_open_ids: str | None = None
+    lark_task_guid: str | None = None
     task_id: int
     project_id: int | None
     project_name: str | None = None
@@ -122,6 +131,22 @@ def _serialize_task(t: Task, db: Session) -> TaskRead:
     return item
 
 
+def _serialize_tasks(tasks: list[Task], db: Session) -> list[TaskRead]:
+    project_ids = {t.project_id for t in tasks if t.project_id is not None}
+    projects: dict[int, Project] = {}
+    if project_ids:
+        rows = db.execute(select(Project).where(Project.project_id.in_(project_ids))).scalars().all()
+        projects = {p.project_id: p for p in rows}
+    result: list[TaskRead] = []
+    for task in tasks:
+        item = TaskRead.model_validate(task)
+        if task.project_id and (project := projects.get(task.project_id)):
+            item.project_name = project.name
+            item.project_tags = project.tags
+        result.append(item)
+    return result
+
+
 class ChangeLogRead(BaseModel):
     log_id: int
     actor_open_id: str
@@ -152,7 +177,7 @@ def _audit_payload(entry: AuditLog, db: Session) -> ChangeLogRead:
 
 
 def _can_view_task(task: Task, current: Member, db: Session) -> bool:
-    if current.open_id in EQUAL_ACCESS_OPEN_IDS:
+    if member_is_super_admin_for_db(db, current):
         return True
     if task.created_by == current.open_id or task.assignee_open_id == current.open_id:
         return True
@@ -160,7 +185,7 @@ def _can_view_task(task: Task, current: Member, db: Session) -> bool:
         project = db.get(Project, task.project_id)
         if project and project.owner_open_id == current.open_id:
             return True
-        if project and current.open_id in EQUAL_ACCESS_OPEN_IDS and project.owner_open_id in EQUAL_ACCESS_OPEN_IDS:
+        if project and member_can_manage_project_scope(db, current, project):
             return True
         if (
             project
@@ -193,14 +218,14 @@ def _is_project_owner_of_task(task: Task, current: Member, db: Session) -> bool:
 
 def _can_edit_task(task: Task, current: Member, db: Session) -> bool:
     return (
-        task.assignee_open_id == current.open_id
+        member_is_super_admin_for_db(db, current)
+        or task.assignee_open_id == current.open_id
         or task.created_by == current.open_id
         or _is_project_owner_of_task(task, current, db)
         or (
             task.project_id
-            and (owned_project := db.get(Project, task.project_id))
-            and current.open_id in EQUAL_ACCESS_OPEN_IDS
-            and owned_project.owner_open_id in EQUAL_ACCESS_OPEN_IDS
+            and (scoped_project := db.get(Project, task.project_id))
+            and member_can_manage_project_scope(db, current, scoped_project)
         )
         or (current.role in ("admin", "staff") and (
             (
@@ -214,8 +239,8 @@ def _can_edit_task(task: Task, current: Member, db: Session) -> bool:
     )
 
 
-def _visible_task_condition(current: Member):
-    if current.open_id in EQUAL_ACCESS_OPEN_IDS:
+def _visible_task_condition(current: Member, db: Session):
+    if member_is_super_admin_for_db(db, current):
         return True
     member_projects = select(ProjectMember.project_id).where(
         ProjectMember.member_open_id == current.open_id,
@@ -237,18 +262,51 @@ def _visible_task_condition(current: Member):
             and_(Task.project_id.is_(None), Task.created_by.in_(same_dept_members)),
             and_(Task.project_id.is_(None), Task.assignee_open_id.in_(same_dept_members)),
         ])
-        if current.open_id in EQUAL_ACCESS_OPEN_IDS:
-            delegated_projects = select(Project.project_id).where(Project.owner_open_id.in_(EQUAL_ACCESS_OPEN_IDS))
-            conditions.append(Task.project_id.in_(delegated_projects))
+    scoped_departments = member_department_scopes(db, current)
+    scoped_bu_departments = business_unit_text_variants(member_business_unit_scopes(db, current))
+    scoped_member_departments = set(scoped_departments) | scoped_bu_departments
+    if scoped_member_departments:
+        scoped_members = select(Member.open_id).where(Member.department.in_(scoped_member_departments))
+        scoped_projects = select(Project.project_id).where(Project.department.in_(scoped_member_departments))
+        conditions.extend([
+            Task.project_id.in_(scoped_projects),
+            and_(Task.project_id.is_(None), Task.created_by.in_(scoped_members)),
+            and_(Task.project_id.is_(None), Task.assignee_open_id.in_(scoped_members)),
+        ])
     return or_(*conditions)
 
 
-def _can_assign_task_to(member_open_id: str | None, current: Member, db: Session) -> bool:
+def _can_assign_task_to(member_open_id: str | None, current: Member, db: Session, project_id: int | None = None) -> bool:
     if not member_open_id or member_open_id == current.open_id:
         return True
+    if member_is_super_admin_for_db(db, current):
+        return True
+    scoped_departments = member_department_scopes(db, current) | business_unit_text_variants(member_business_unit_scopes(db, current))
     member = db.get(Member, member_open_id)
     if not member:
         raise HTTPException(400, "assignee not found")
+    if project_id is not None:
+        project = db.get(Project, project_id)
+        if not project:
+            raise HTTPException(400, "project not found")
+        target_membership = db.get(ProjectMember, (project_id, member_open_id))
+        target_in_project = project.owner_open_id == member_open_id or (target_membership is not None and target_membership.left_at is None)
+        current_membership = db.get(ProjectMember, (project_id, current.open_id))
+        current_can_manage_project = (
+            project.owner_open_id == current.open_id
+            or member_can_manage_project_scope(db, current, project)
+            or (current_membership is not None and current_membership.left_at is None)
+            or (
+                project.project_type == "team"
+                and current.role in ("admin", "staff")
+                and current.department
+                and project.department == current.department
+            )
+        )
+        if target_in_project and current_can_manage_project:
+            return True
+    if member.department in scoped_departments:
+        return True
     if current.role in ("admin", "staff") and current.department and member.department == current.department:
         return True
     return False
@@ -260,9 +318,11 @@ def _can_create_task_in_project(project_id: int | None, current: Member, db: Ses
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(400, "project not found")
-    if project.owner_open_id == current.open_id:
+    if member_is_super_admin_for_db(db, current):
         return True
-    if current.open_id in EQUAL_ACCESS_OPEN_IDS and project.owner_open_id in EQUAL_ACCESS_OPEN_IDS:
+    if member_can_manage_project_scope(db, current, project):
+        return True
+    if project.owner_open_id == current.open_id:
         return True
     if (
         project.project_type == "team"
@@ -276,6 +336,8 @@ def _can_create_task_in_project(project_id: int | None, current: Member, db: Ses
 
 
 class TaskCreate(BaseModel):
+    helper_open_ids: str | None = None
+    mentor_open_ids: str | None = None
     title: str
     description: str | None = None
     project_id: int | None = None
@@ -297,6 +359,8 @@ class TaskCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
+    helper_open_ids: str | None = None
+    mentor_open_ids: str | None = None
     title: str | None = None
     description: str | None = None
     project_id: int | None = None
@@ -408,6 +472,54 @@ def _ensure_task_assignee_project_member(db: Session, task: Task) -> None:
     ))
 
 
+
+class TaskFeedbackPayload(BaseModel):
+    content: str
+
+
+class SystemFeedbackPayload(BaseModel):
+    content: str
+    page_url: str | None = None
+
+
+class TaskFeedbackRead(BaseModel):
+    feedback_id: int
+    task_id: int
+    project_id: int | None = None
+    reporter_open_id: str
+    reporter_name: str | None = None
+    content: str
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SystemFeedbackRead(BaseModel):
+    feedback_id: int
+    reporter_open_id: str
+    reporter_name: str | None = None
+    content: str
+    page_url: str | None = None
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+def _serialize_task_feedback(row: TaskFeedback, db: Session) -> TaskFeedbackRead:
+    item = TaskFeedbackRead.model_validate(row)
+    reporter = db.get(Member, row.reporter_open_id)
+    item.reporter_name = reporter.name if reporter else None
+    return item
+
+
+def _serialize_system_feedback(row: SystemFeedback, db: Session) -> SystemFeedbackRead:
+    item = SystemFeedbackRead.model_validate(row)
+    reporter = db.get(Member, row.reporter_open_id)
+    item.reporter_name = reporter.name if reporter else None
+    return item
+
 @router.get("", response_model=PageResponse[TaskRead])
 def list_tasks(
     page: int = Query(1, ge=1),
@@ -420,7 +532,7 @@ def list_tasks(
 ):
     stmt = select(Task)
     count_stmt = select(func.count()).select_from(Task)
-    visibility = _visible_task_condition(current)
+    visibility = _visible_task_condition(current, db)
     stmt = stmt.where(visibility)
     count_stmt = count_stmt.where(visibility)
     if project_id is not None:
@@ -437,7 +549,7 @@ def list_tasks(
     items = db.execute(stmt).scalars().all()
     total = db.execute(count_stmt).scalar_one()
     return PageResponse[TaskRead](
-        items=[_serialize_task(t, db) for t in items],
+        items=_serialize_tasks(list(items), db),
         total=total, page=page, page_size=page_size,
     )
 
@@ -450,14 +562,14 @@ def today_tasks(
     """今日待办: 显式加入今天的任务。第二天会自然清空，未完成任务仍保留在普通任务列表。"""
     stmt = (
         select(Task)
-        .where(_visible_task_condition(current))
+        .where(_visible_task_condition(current, db))
         .where(Task.today_todo_date == date.today())
         .where(Task.status.in_(["todo", "in_progress", "blocked"]))
         .order_by(Task.priority.desc(), Task.due_date.asc().nullslast(), Task.task_id.desc())
         .limit(200)
     )
     items = db.execute(stmt).scalars().all()
-    return [_serialize_task(t, db) for t in items]
+    return _serialize_tasks(list(items), db)
 
 
 @router.post("/{task_id}/today", response_model=TaskRead)
@@ -564,7 +676,7 @@ async def create_task(
 ):
     if not _can_create_task_in_project(payload.project_id, current, db):
         raise HTTPException(403, "无权在该项目创建任务")
-    if not _can_assign_task_to(payload.assignee_open_id, current, db):
+    if not _can_assign_task_to(payload.assignee_open_id, current, db, payload.project_id):
         raise HTTPException(403, "无权分配给该成员")
     t = Task(**payload.model_dump(), created_by=current.open_id)
     if t.assignee_open_id is None:
@@ -573,6 +685,16 @@ async def create_task(
     db.flush()
     _ensure_task_assignee_project_member(db, t)
     db.commit(); db.refresh(t)
+    guid = await run_in_threadpool(
+        create_lark_task,
+        t.title,
+        getattr(t, "description", None),
+        t.due_date,
+        t.assignee_open_id,
+    )
+    if guid:
+        t.lark_task_guid = guid
+        db.commit()
     new_rid = await mirror_to_base(
         getattr(settings, "lark_table_tasks", ""),
         _task_fields_for_base(t),
@@ -613,7 +735,8 @@ async def update_task(
     if "project_id" in payload.model_fields_set and payload.project_id != t.project_id:
         if not _can_create_task_in_project(payload.project_id, current, db):
             raise HTTPException(403, "无权移动到该项目")
-    if payload.assignee_open_id is not None and not _can_assign_task_to(payload.assignee_open_id, current, db):
+    target_project_id = payload.project_id if "project_id" in payload.model_fields_set else t.project_id
+    if payload.assignee_open_id is not None and not _can_assign_task_to(payload.assignee_open_id, current, db, target_project_id):
         raise HTTPException(403, "无权分配给该成员")
     old_status = t.status
     old_assignee = t.assignee_open_id
@@ -625,6 +748,13 @@ async def update_task(
         t.completed_at = None
     _ensure_task_assignee_project_member(db, t)
     db.commit(); db.refresh(t)
+    if t.lark_task_guid and payload.status is not None and (payload.status == "done") != (old_status == "done"):
+        await run_in_threadpool(set_lark_task_completed, t.lark_task_guid, payload.status == "done")
+    elif t.lark_task_guid is None and payload.assignee_open_id is not None and t.assignee_open_id:
+        guid = await run_in_threadpool(create_lark_task, t.title, None, t.due_date, t.assignee_open_id)
+        if guid:
+            t.lark_task_guid = guid
+            db.commit()
     new_rid = await mirror_to_base(
         getattr(settings, "lark_table_tasks", ""),
         _task_fields_for_base(t),
@@ -728,7 +858,7 @@ def test_task_focus_card(
     db: Session = Depends(get_db),
     current: Member = Depends(get_current_user),
 ):
-    if current.open_id not in EQUAL_ACCESS_OPEN_IDS:
+    if not member_is_super_admin_for_db(db, current):
         raise HTTPException(403, "仅开发者可发送测试卡片")
     t = db.get(Task, task_id)
     if not t:
@@ -845,13 +975,8 @@ def publish_task(
     if not _can_view_task(t, current, db):
         raise HTTPException(403, "无权查看")
     can_publish = (
-        t.created_by == current.open_id
-        or (
-            t.project_id
-            and (owned_project := db.get(Project, t.project_id))
-            and current.open_id in EQUAL_ACCESS_OPEN_IDS
-            and owned_project.owner_open_id in EQUAL_ACCESS_OPEN_IDS
-        )
+        member_is_super_admin_for_db(db, current)
+        or t.created_by == current.open_id
         or (current.role in ("admin", "staff") and (
             (
                 t.project_id
@@ -928,14 +1053,9 @@ def notify_task_again(
     if not _can_view_task(t, current, db):
         raise HTTPException(403, "无权查看")
     can_notify = (
-        t.created_by == current.open_id
+        member_is_super_admin_for_db(db, current)
+        or t.created_by == current.open_id
         or t.assignee_open_id == current.open_id
-        or (
-            t.project_id
-            and (owned_project := db.get(Project, t.project_id))
-            and current.open_id in EQUAL_ACCESS_OPEN_IDS
-            and owned_project.owner_open_id in EQUAL_ACCESS_OPEN_IDS
-        )
         or (current.role in ("admin", "staff") and (
             (
                 t.project_id
@@ -966,9 +1086,62 @@ def notify_task_again(
     return _serialize_task(t, db)
 
 
+@router.post("/feedback", response_model=SystemFeedbackRead, status_code=201)
+def create_system_feedback(
+    payload: SystemFeedbackPayload,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_user),
+):
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(400, "请填写反馈内容")
+    row = SystemFeedback(
+        reporter_open_id=current.open_id,
+        content=content,
+        page_url=(payload.page_url or "").strip() or None,
+        status="open",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_system_feedback(row, db)
+
+
+@router.post("/{task_id}/feedback", response_model=TaskFeedbackRead, status_code=201)
+def create_task_feedback(
+    task_id: int,
+    payload: TaskFeedbackPayload,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_user),
+):
+    t = db.get(Task, task_id)
+    if not t:
+        raise HTTPException(404, "not found")
+    if not _can_view_task(t, current, db):
+        raise HTTPException(403, "无权查看")
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(400, "请填写反馈内容")
+    row = TaskFeedback(
+        task_id=t.task_id,
+        project_id=t.project_id,
+        reporter_open_id=current.open_id,
+        content=content,
+        status="open",
+    )
+    db.add(row)
+    _write_task_audit(db, current, t, "feedback_create", {"feedback": content})
+    if t.project_id:
+        _write_focus_project_log(db, current, t, f"任务反馈: {t.title}", f"反馈人: {current.name or current.open_id}\n问题: {content}")
+    db.commit()
+    db.refresh(row)
+    return _serialize_task_feedback(row, db)
+
+
 @router.delete("/{task_id}", status_code=204)
 async def delete_task(
     task_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current: Member = Depends(get_current_user),
 ):
@@ -976,13 +1149,12 @@ async def delete_task(
     if not t: raise HTTPException(404)
     if not _can_view_task(t, current, db):
         raise HTTPException(403)
-    if t.created_by != current.open_id and t.assignee_open_id != current.open_id and not _is_project_owner_of_task(t, current, db):
-        can_delete_via_equal_access = (
-            t.project_id
-            and (owned_project := db.get(Project, t.project_id))
-            and current.open_id in EQUAL_ACCESS_OPEN_IDS
-            and owned_project.owner_open_id in EQUAL_ACCESS_OPEN_IDS
-        )
+    if (
+        not member_is_super_admin_for_db(db, current)
+        and t.created_by != current.open_id
+        and t.assignee_open_id != current.open_id
+        and not _is_project_owner_of_task(t, current, db)
+    ):
         can_delete_via_department = (
             current.role in ("admin", "staff")
             and t.project_id
@@ -990,8 +1162,13 @@ async def delete_task(
             and project.project_type == "team"
             and project.department == current.department
         )
-        if not (can_delete_via_equal_access or can_delete_via_department):
+        if not can_delete_via_department:
             raise HTTPException(403)
     base_rid = t.base_record_id
-    db.delete(t); db.commit()
-    await delete_from_base(getattr(settings, "lark_table_tasks", ""), base_rid)
+    lark_task_guid = t.lark_task_guid
+    db.delete(t)
+    db.commit()
+    if lark_task_guid:
+        background_tasks.add_task(run_in_threadpool, delete_lark_task, lark_task_guid)
+    if base_rid:
+        background_tasks.add_task(delete_from_base, getattr(settings, "lark_table_tasks", ""), base_rid)

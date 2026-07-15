@@ -16,6 +16,7 @@ import VenueBadge from "../components/VenueBadge";
 import { Avatar, PageShell, SectionEmpty, SectionError, SectionLoading, chipStyle, colors, fmtPoints, lineClamp, sectionCardStyle } from "../components/ui";
 import { useAuth } from "../hooks/useAuth";
 import type { MeetingNote, Member, MemberWorkload, Paper } from "../types/api";
+import { projectWorkbenchPath } from "../utils/projectNavigation";
 
 type TabKey = "papers" | "competitions" | "contributions" | "notes" | "points";
 
@@ -402,7 +403,7 @@ const MemberDetailPage = () => {
                       <button
                         key={task.task_id}
                         type="button"
-                        onClick={() => navigate(task.project_id ? `/projects/${task.project_id}` : "/projects")}
+                        onClick={() => navigate(task.project_id ? projectWorkbenchPath(task.project_id) : "/projects")}
                         style={{ ...itemCardStyle, width: "100%", textAlign: "left", padding: 12, cursor: "pointer" }}
                       >
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>

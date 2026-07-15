@@ -15,7 +15,7 @@ import json
 import logging
 import subprocess
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
 from sqlalchemy import select
@@ -23,12 +23,14 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     ChatIntentLog,
+    LabBroadcastItem,
     Member,
     ProjectChat,
     ProjectChatMessage,
     Task,
 )
 
+from app.config import settings
 log = logging.getLogger(__name__)
 
 LARK_CLI = "/home/ubuntu/.npm-global/bin/lark-cli"
@@ -36,10 +38,13 @@ LARK_CLI = "/home/ubuntu/.npm-global/bin/lark-cli"
 # Delivery target (演示阶段固定到 admin 私聊, 不发到协作群).
 # 上线时改回发到 chat.chat_id (注释下方 _DELIVER_TO_ADMIN_OPEN_ID 即可).
 _DELIVER_TO_ADMIN_OPEN_ID = "ou_20fec537961e0a66669370b00d0fc52d"
+LAB_TZ = timezone(timedelta(hours=8))
 
 
 def _send_interactive(chat_id: str | None, user_id: str | None, card: dict, idempotency_key: str | None = None) -> str | None:
     """直接调 lark-cli 发 interactive 卡, 返回 message_id (失败返回 None)."""
+    if not settings.notifications_enabled:
+        return None
     if not card or (not chat_id and not user_id):
         return None
     args = [LARK_CLI, "im", "+messages-send", "--msg-type", "interactive",
@@ -80,6 +85,25 @@ def _fmt_due(dt: datetime | None, today: datetime | None = None) -> tuple[str, s
     return f"截止 {dt.month}/{dt.day}", "grey"
 
 
+def _local_today() -> date:
+    return datetime.now(LAB_TZ).date()
+
+
+def _week_start(day: date) -> date:
+    return day - timedelta(days=day.weekday())
+
+
+def _due_status(task: Task, today: date) -> str:
+    if not task.due_date:
+        return "no_due"
+    due = task.due_date.date()
+    if due < today:
+        return "overdue"
+    if due == today:
+        return "today_due"
+    return "upcoming"
+
+
 def _resolve_name(db: Session, open_id: str | None, cache: dict[str, str] | None = None) -> str:
     if not open_id:
         return "未指派"
@@ -90,6 +114,76 @@ def _resolve_name(db: Session, open_id: str | None, cache: dict[str, str] | None
     if cache is not None:
         cache[open_id] = name
     return name
+
+
+def _record_morning_broadcast_items(db: Session, chat: ProjectChat, open_tasks: list[Task], today: date) -> None:
+    """Persist daily broadcast appearances for Monday-Saturday weekly ranking."""
+    if today.weekday() == 6:
+        return
+    if not open_tasks:
+        return
+
+    task_ids = [t.task_id for t in open_tasks]
+    existing = set(db.execute(
+        select(LabBroadcastItem.task_id).where(
+            LabBroadcastItem.broadcast_date == today,
+            LabBroadcastItem.project_chat_id == chat.project_chat_id,
+            LabBroadcastItem.task_id.in_(task_ids),
+        )
+    ).scalars().all())
+
+    for task in open_tasks:
+        if task.task_id in existing:
+            continue
+        db.add(LabBroadcastItem(
+            broadcast_date=today,
+            project_chat_id=chat.project_chat_id,
+            project_id=chat.project_id,
+            task_id=task.task_id,
+            assignee_open_id=task.assignee_open_id,
+            task_status=task.status,
+            due_status=_due_status(task, today),
+        ))
+    db.flush()
+
+
+def _weekly_broadcast_rankings(db: Session, chat: ProjectChat, today: date, limit: int = 10) -> list[dict[str, object]]:
+    """Return assignee ranking for current Monday-Saturday broadcast appearances."""
+    if today.weekday() == 6:
+        return []
+    rows = db.execute(
+        select(LabBroadcastItem).where(
+            LabBroadcastItem.project_chat_id == chat.project_chat_id,
+            LabBroadcastItem.broadcast_date >= _week_start(today),
+            LabBroadcastItem.broadcast_date <= today,
+            LabBroadcastItem.assignee_open_id.isnot(None),
+        )
+    ).scalars().all()
+
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        if not row.assignee_open_id:
+            continue
+        bucket = counts.setdefault(row.assignee_open_id, {"total": 0, "overdue": 0, "today_due": 0})
+        bucket["total"] += 1
+        if row.due_status == "overdue":
+            bucket["overdue"] += 1
+        elif row.due_status == "today_due":
+            bucket["today_due"] += 1
+
+    name_cache: dict[str, str] = {}
+    ranked = [
+        {
+            "open_id": open_id,
+            "name": _resolve_name(db, open_id, name_cache),
+            "total": values["total"],
+            "overdue": values["overdue"],
+            "today_due": values["today_due"],
+        }
+        for open_id, values in counts.items()
+    ]
+    ranked.sort(key=lambda item: (-int(item["total"]), str(item["name"])))
+    return ranked[:limit]
 
 
 # ============================================================
@@ -246,9 +340,12 @@ def build_morning_broadcast_card(
     open_tasks: list[Task],
     today_due_count: int,
     overdue_count: int,
+    weekly_rankings: list[dict[str, object]] | None = None,
+    broadcast_date: date | None = None,
 ) -> dict:
     name_cache: dict[str, str] = {}
-    today = datetime.utcnow()
+    today_date = broadcast_date or _local_today()
+    today = datetime.combine(today_date, datetime.min.time())
     from app.models import Project
     _proj = db.get(Project, chat.project_id) if chat.project_id else None
     project_name = _proj.name if _proj else (chat.chat_name or "项目群")
@@ -323,6 +420,23 @@ def build_morning_broadcast_card(
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
             f'<font color="grey">…还有 {len(open_tasks) - 15} 条未列出, 见项目中心.</font>'}})
 
+    if weekly_rankings:
+        ranking_lines = []
+        for idx, row in enumerate(weekly_rankings[:10], start=1):
+            suffix = " · 周日组会自行发言" if idx <= 3 else ""
+            ranking_lines.append(
+                f'{idx}. **@{row["name"]}** · 累计 {row["total"]} 次'
+                f' · 逾期 {row["overdue"]} · 今日到期 {row["today_due"]}{suffix}'
+            )
+        elements += [
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content":
+                f'**本周累计排名** · {today_date.strftime("%m/%d")} 更新\n'
+                + "\n".join(ranking_lines)}},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content":
+                "统计口径: 从本周一开始, 每日通报中被列入未完成待办即累计 1 次; 周日不统计. 排名前三位同志请在本周日晚周组会自行总结本周工作情况."}]},
+        ]
+
     elements += [
         {"tag": "hr"},
         {"tag": "note", "elements": [{"tag": "plain_text", "content":
@@ -351,11 +465,24 @@ def send_morning_broadcast_for_chat(db: Session, chat: ProjectChat) -> str | Non
         ).order_by(Task.due_date.asc().nulls_last(), Task.task_id.asc())
     ).scalars().all()
 
-    today = datetime.utcnow().date()
+    today = _local_today()
     today_due = sum(1 for t in open_tasks if t.due_date and t.due_date.date() == today)
     overdue = sum(1 for t in open_tasks if t.due_date and t.due_date.date() < today)
 
-    card = build_morning_broadcast_card(db, chat, list(open_tasks), today_due, overdue)
+    open_task_list = list(open_tasks)
+    _record_morning_broadcast_items(db, chat, open_task_list, today)
+    db.commit()
+    weekly_rankings = _weekly_broadcast_rankings(db, chat, today)
+
+    card = build_morning_broadcast_card(
+        db,
+        chat,
+        open_task_list,
+        today_due,
+        overdue,
+        weekly_rankings=weekly_rankings,
+        broadcast_date=today,
+    )
     return _send_interactive(None, _DELIVER_TO_ADMIN_OPEN_ID, card,
                              idempotency_key=f"chat-morning-{chat.project_chat_id}-{today.isoformat()}")
 

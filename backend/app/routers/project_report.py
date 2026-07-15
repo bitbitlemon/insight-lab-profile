@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import require_role
-from app.models import CalendarEvent, Member, Project, ProjectChat, ProjectChatMessage, ProjectMember, Task
+from app.models import (
+    CalendarEvent, Member, Project, ProjectChat, ProjectChatMessage,
+    ProjectLog, ProjectMember, ProjectStageTransition, Task,
+)
+from app.services.stage_flow import SEVEN_STAGES, project_category_from_tags
 
 router = APIRouter(prefix="/api/project-report", tags=["project_report"])
 
@@ -539,4 +543,160 @@ def project_report_summary(
         risk_projects=risk_projects[:80],
         overdue_tasks=overdue_tasks[:100],
         briefing=briefing,
+    )
+
+
+class StageOverviewItem(BaseModel):
+    project_id: int
+    name: str
+    owner_open_id: str | None = None
+    owner_name: str | None = None
+    category: str | None = None
+    status: str
+    priority: str
+    current_stage: str | None = None
+    stage_index: int | None = None
+    stage_entered_at: datetime | None = None
+    days_in_stage: int = 0
+    stage_stuck: bool = False
+    target_end_date: date | None = None
+    target_overdue: bool = False
+    pending_approval_log_id: int | None = None
+    pending_approval_since: datetime | None = None
+    pending_approval_days: int = 0
+    open_tasks: int = 0
+    overdue_tasks: int = 0
+
+
+class StageOverviewSummary(BaseModel):
+    total_projects: int
+    by_stage: dict[str, int]
+    stuck_projects: int
+    target_overdue_projects: int
+    pending_approvals: int
+    stuck_threshold_days: int
+
+
+class StageOverviewResponse(BaseModel):
+    summary: StageOverviewSummary
+    items: list[StageOverviewItem]
+
+
+@router.get("/stage-overview", response_model=StageOverviewResponse)
+def project_stage_overview(
+    stuck_days: int = Query(14, ge=1, le=365),
+    include_archived: bool = Query(False),
+    db: Session = Depends(get_db),
+    _: Member = Depends(require_role("admin", "staff")),
+):
+    now = datetime.utcnow()
+    today = date.today()
+    stmt = select(Project)
+    if not include_archived:
+        stmt = stmt.where(Project.status != "archived", Project.archived_at.is_(None))
+    projects = db.execute(stmt).scalars().all()
+    if not projects:
+        return StageOverviewResponse(
+            summary=StageOverviewSummary(
+                total_projects=0, by_stage={}, stuck_projects=0,
+                target_overdue_projects=0, pending_approvals=0,
+                stuck_threshold_days=stuck_days,
+            ),
+            items=[],
+        )
+    project_ids = [p.project_id for p in projects]
+
+    # 每项目最近一次阶段流转 (进入当前阶段的时间)
+    transitions = db.execute(
+        select(ProjectStageTransition)
+        .where(ProjectStageTransition.project_id.in_(project_ids))
+        .order_by(ProjectStageTransition.project_id, ProjectStageTransition.created_at)
+    ).scalars().all()
+    last_transition: dict[int, ProjectStageTransition] = {}
+    for t in transitions:
+        last_transition[t.project_id] = t
+
+    # 每项目未决阶段审批
+    pending_logs = db.execute(
+        select(ProjectLog)
+        .where(
+            ProjectLog.project_id.in_(project_ids),
+            ProjectLog.kind == "paper_stage",
+            ProjectLog.resource_type == "stage_approval",
+            ProjectLog.status.in_(("pending_approval", "pending", "notified")),
+        )
+        .order_by(ProjectLog.created_at)
+    ).scalars().all()
+    pending_by_project: dict[int, ProjectLog] = {}
+    for log in pending_logs:
+        pending_by_project.setdefault(log.project_id, log)
+
+    # 任务统计
+    task_rows = db.execute(
+        select(Task.project_id, Task.status, Task.due_date)
+        .where(Task.project_id.in_(project_ids))
+    ).all()
+    open_counts: dict[int, int] = defaultdict(int)
+    overdue_counts: dict[int, int] = defaultdict(int)
+    for pid, status_value, due in task_rows:
+        if status_value in ("todo", "in_progress", "blocked"):
+            open_counts[pid] += 1
+            due_day = due.date() if isinstance(due, datetime) else due
+            if due_day and due_day < today:
+                overdue_counts[pid] += 1
+
+    members = {m.open_id: m.name for m in db.execute(select(Member)).scalars().all()}
+
+    items: list[StageOverviewItem] = []
+    by_stage: dict[str, int] = defaultdict(int)
+    stuck_count = overdue_count = 0
+    for p in projects:
+        stage = p.current_stage if p.current_stage in SEVEN_STAGES else None
+        trans = last_transition.get(p.project_id)
+        entered_at = trans.created_at if trans and trans.to_stage == stage else p.created_at
+        days_in_stage = max(0, (now - entered_at).days) if entered_at else 0
+        is_terminal = p.status in ("completed", "archived") or stage == SEVEN_STAGES[-1]
+        stage_stuck = bool(stage and not is_terminal and days_in_stage >= stuck_days)
+        ted = p.target_end_date.date() if isinstance(p.target_end_date, datetime) else p.target_end_date
+        target_overdue = bool(ted and ted < today and p.status not in ("completed", "archived"))
+        pending = pending_by_project.get(p.project_id)
+        pending_days = max(0, (now - pending.created_at).days) if pending else 0
+        if stage:
+            by_stage[stage] += 1
+        if stage_stuck:
+            stuck_count += 1
+        if target_overdue:
+            overdue_count += 1
+        items.append(StageOverviewItem(
+            project_id=p.project_id,
+            name=p.name,
+            owner_open_id=p.owner_open_id,
+            owner_name=members.get(p.owner_open_id),
+            category=project_category_from_tags(p.tags),
+            status=p.status,
+            priority=p.priority,
+            current_stage=stage,
+            stage_index=(SEVEN_STAGES.index(stage) + 1) if stage else None,
+            stage_entered_at=entered_at,
+            days_in_stage=days_in_stage,
+            stage_stuck=stage_stuck,
+            target_end_date=ted,
+            target_overdue=target_overdue,
+            pending_approval_log_id=pending.log_id if pending else None,
+            pending_approval_since=pending.created_at if pending else None,
+            pending_approval_days=pending_days,
+            open_tasks=open_counts.get(p.project_id, 0),
+            overdue_tasks=overdue_counts.get(p.project_id, 0),
+        ))
+    items.sort(key=lambda i: (not i.stage_stuck, not i.target_overdue, -i.days_in_stage))
+    return StageOverviewResponse(
+        summary=StageOverviewSummary(
+            total_projects=len(projects),
+            by_stage=dict(by_stage),
+            stuck_projects=stuck_count,
+            target_overdue_projects=overdue_count,
+            pending_approvals=len(pending_by_project),
+            stuck_threshold_days=stuck_days,
+        ),
+        items=items,
     )

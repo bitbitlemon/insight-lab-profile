@@ -60,6 +60,18 @@ class LarkClient:
         return data.get("data", {})
 
     # ============ Base CRUD ============
+    async def list_tables(self, app_token: str, page_size: int = 100, page_token: str | None = None) -> dict:
+        params: dict[str, Any] = {"page_size": page_size}
+        if page_token:
+            params["page_token"] = page_token
+        return await self._request("GET", f"/bitable/v1/apps/{app_token}/tables", params=params)
+
+    async def list_fields(self, app_token: str, table_id: str, page_size: int = 100, page_token: str | None = None) -> dict:
+        params: dict[str, Any] = {"page_size": page_size}
+        if page_token:
+            params["page_token"] = page_token
+        return await self._request("GET", f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields", params=params)
+
     async def list_records(self, app_token: str, table_id: str, page_size: int = 100, page_token: str | None = None) -> dict:
         params: dict[str, Any] = {"page_size": page_size}
         if page_token:

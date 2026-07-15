@@ -16,6 +16,7 @@ import type {
   ProjectPriority,
   ProjectStatus,
   ProjectType,
+  StageCheckItem,
 } from "../types/api";
 
 export interface ListProjectsParams {
@@ -40,6 +41,7 @@ export interface ProjectPayload {
   status?: ProjectStatus;
   priority?: ProjectPriority;
   project_type?: ProjectType;
+  owner_open_id?: string | null;
   department?: string | null;
   start_date?: string | null;
   target_end_date?: string | null;
@@ -77,6 +79,8 @@ export interface ProjectLogPayload {
   paper_stage?: "topic" | "research" | "experiment" | "draft" | "submit" | null;
   paper_status?: "published" | "accepted" | "under_review" | "in_progress" | "rejected" | null;
   milestone_status?: "pending" | "in_progress" | "done" | "blocked" | null;
+  approver_open_ids?: string[] | null;
+  approval_mode?: "any" | "all" | null;
   notify_now?: boolean;
 }
 
@@ -141,6 +145,19 @@ export const deleteProjectRelation = async (
 
 export const createProjectLog = async (projectId: number | string, payload: ProjectLogPayload): Promise<ProjectLog> => {
   const { data } = await api.post<ProjectLog>(`/projects/${projectId}/logs`, payload);
+  return data;
+};
+
+export const listStageChecks = async (projectId: number | string): Promise<StageCheckItem[]> => {
+  const { data } = await api.get<StageCheckItem[]>(`/projects/${projectId}/stage-checks`);
+  return data;
+};
+
+export const saveStageChecks = async (
+  projectId: number | string,
+  items: { stage_title: string; item_text: string; checked: boolean; payload?: Record<string, unknown> | null }[],
+): Promise<StageCheckItem[]> => {
+  const { data } = await api.put<StageCheckItem[]>(`/projects/${projectId}/stage-checks`, { items });
   return data;
 };
 

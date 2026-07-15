@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-06-05 10:19 CST
+Last updated: 2026-06-12 16:20 CST
 
 This file is the shared coordination note for Codex and Claude. Keep it short and update it before and after touching production files.
 
@@ -17,6 +17,256 @@ This file is the shared coordination note for Codex and Claude. Keep it short an
 - Claude, 2026-06-03 18:30 CST: integrating chat intent cards into real flow. New files (no conflict): `backend/app/services/chat_cards.py` (build/send completion-confirm card + morning broadcast card, queries real DB), `backend/app/services/chat_card_actions.py` (handle card.action.trigger callbacks, writes real Task/ChatIntentLog). Minimal additive changes to Codex's area: `backend/app/routers/lark_callbacks.py` (+ dispatch branch by value.kind), `backend/app/services/scheduler.py` (+ 09:30 cron job append). My own file: `backend/app/services/chat_intelligence.py` (gate complete_task high-conf auto-apply behind card confirmation). Intent: enable production flow for AI-detected completion + daily morning broadcast in collaboration chat oc_1f036. Will not touch frontend during Codex's refactor.
 
 ## Recent Changes
+
+- Codex, 2026-07-01 19:24 CST:
+  - Improved Cloud Lab Babylon scene readability after user reported all-white components lacked detail.
+  - `frontend/src/components/CloudLabScene3D.tsx`: added component-level pastel palettes for desks, chairs, boards, walls, and chat tables/chairs; added Babylon edge rendering for furniture/walls/boards; added chair backs plus keyboard/monitor base details; moved default orbit camera slightly closer.
+  - Fixed runtime issue by importing Babylon `edgesRenderer` side-effect module before using `enableEdgesRendering`.
+  - Verification: remote `vite build` succeeded; deployed to `/var/www/project-management-approval`; `/api/health` returned ok; `/projects/cloud-lab-babylon` serves `index-Dt-Qx_x3.js`; Playwright confirmed nonblank canvas and task modeling text. Screenshot: `/tmp/cloud-lab-component-color-fixed-desktop.png`.
+
+- Codex, 2026-07-01 19:10 CST:
+  - Continued Cloud Lab Babylon development directly on `49.234.187.29` (4C4G), not on the 2G dev machine.
+  - `frontend/src/components/CloudLabScene3D.tsx`: added distinguishable enterprise pastel colors for zones, walls, desks/chairs, task boards, chat chairs, plus wider pastel zone boundary bands for clearer recognition while keeping the clean digital-twin style.
+  - Added missing `frontend/src/api/permissions.ts` so the current frontend graph can bundle on the remote server; existing full `tsc` still has unrelated historical type/export issues, so deployment used `vite build`.
+  - Verification: remote `npx vite build` succeeded; deployed to `/var/www/project-management-approval`; `/api/health` returned ok; `/projects/cloud-lab-babylon` now serves `index-CIH-u36w.js`; Playwright check confirmed nonblank Babylon canvas and task modeling text. Screenshot: `/tmp/cloud-lab-final-color-desktop.png`.
+
+- Codex, 2026-06-14 13:17 CST:
+  - Removed the AI completion-confirm card flow requested by the user. chat_intelligence.py now prompts only for new-task extraction, drops model-returned complete_task intents, and rejects old auto-applied complete_task remnants instead of sending completion cards or marking tasks done.
+  - chat_cards.py no longer exposes the old visible card title; legacy card builder remains only for old callback compatibility and is no longer called from auto extraction.
+  - Verification: py_compile passed for changed service files; grep found no `AI 识别到一条待办可能已完成`; restarted backend/background services; /api/health returned ok.
+
+- Codex, 2026-06-12 16:20 CST:
+  - Fixed project member display falling back to raw open_id when the member list map is not ready.
+  - `backend/app/routers/projects.py`: `ProjectMemberRead` now includes `member_name`, `avatar_url`, `department`, and `position`; project list/detail/create/update/publish serialization enriches members from `members`.
+  - `frontend/src/types/api.ts` and `frontend/src/pages/ProjectListPage.tsx`: project member chips and edit rows now prefer the enriched project-member fields before falling back to `memberMap`.
+  - Cleaned project briefing summaries: strips task status prefixes and ID/card noise, deduplicates items, and uses clearer summary lines.
+  - Verification: backend `py_compile` passed; frontend `npm run build` passed; backend/web services active; `/api/health` returned ok; `/projects?project_id=38` returned 200; project 38 member serializes as `马艳逢` and briefing no longer shows `任务todo:` prefixes.
+
+- Codex, 2026-06-12 11:47 CST:
+  - Added LLM-based visibility judgement for project timeline chat topics after user found image/card/invite garbage in `litebot智载`.
+  - `backend/app/routers/projects.py`: chat topics now first hard-filter obvious noise (`[Image]`, `[nonsupport]`, `<card>`, `<file>`, invite/member events, social chatter), then batch-call DeepSeek to decide `keep/title/description/important/has_action` for remaining candidates. If DeepSeek returns judgements, only explicit `keep=true` items enter the timeline/briefing; unjudged items are dropped. Fallback rules apply only when LLM is unavailable.
+  - `litebot智载` production sample changed from raw garbage topics to concise judged nodes such as `模型小人放置位置确认`, `周五前需完成最新版本`, `第一版功能：扫脸进入实验室`, and no longer shows image/card/invite/file placeholders.
+  - Verification: `python3 -m py_compile app/routers/projects.py` passed; production `_collect_project_timeline(38)` returned 9 chat items, all `llm_judged=true`; restarted backend; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; `/projects?project_id=38` returned 200.
+
+- Codex, 2026-06-12 11:20 CST:
+  - Ran full data/chat audit and completed high-confidence group-chat project associations.
+  - Backed up DB first: `backups/insight_lab.before_full_data_chat_audit_20260612_111250.db`.
+  - Imported 35 new Feishu Base chat rows, then classified all `lark_base_chat_messages`: `new` is now `0`; `pending_project` is `4952`; `ignored` is `274`.
+  - Added/confirmed strict group-name associations only where the chat name clearly points to a project. Created `8` new `project_chats` and wrote `6` project summary logs titled `全量群聊巡检与关联总结`.
+  - Main automatic associations: project `19` 公安智慧教育训练平台 (3 chats / 210 records), project `30` AI启航—开学第一课决赛 (2 chats / 144 records), project `38` litebot智载 (3 chats / 471 records), project `27` 智警杯比赛 (69 records), project `28` 智能实验室 (24 records), project `21` 低空经济 (5 records).
+  - Left ambiguous/general groups unassociated for manual confirmation, including `课题组`, `25交流群`, `安全情报BU交流群`, `数学建模`, `人工智能协会BU`.
+  - Added report: `docs/full_data_chat_audit_20260612.md`.
+  - Verification: backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; `/projects` returned 200.
+
+- Codex, 2026-06-12 11:08 CST:
+  - Tightened project detail task visibility and improved chat-log descriptions per user feedback.
+  - `frontend/src/pages/ProjectListPage.tsx`: project detail `项目任务` now defaults to unfinished/non-cancelled priority work only: high/urgent, blocked, overdue, or open for 24+ hours. Done/cancelled and fresh low/medium items are hidden with a count hint. AI-origin tasks now show `AI提炼` for both `ai_chat` and `chat_ai`.
+  - `backend/app/routers/projects.py`: chat timeline body now includes a one-sentence explanation for the concise node title, e.g. server resource/channel impact or delivery-progress confirmation.
+  - Production data cleanup: backed up DB to `backups/insight_lab.before_project19_task_visibility_cleanup_20260612_110729.db`; marked duplicate project `19` tasks `189` and `191` as cancelled/low with merged-task titles.
+  - Verification: `python3 -m py_compile app/routers/projects.py` passed; frontend `npm run build` passed and generated `ProjectListPage-Qk2wNj9r.js`; restarted backend; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; project `19` visible main task count under the new rule is 6 and timeline chat samples include concise descriptions without message IDs/open IDs.
+
+- Codex, 2026-06-12 10:57 CST:
+  - Cleaned project timeline chat entries so group-chat topics render as short project nodes instead of raw message text.
+  - `backend/app/routers/projects.py`: `_chat_timeline_item` now maps raw topic titles to concise node titles such as `确认服务器资源与通道问题` / `确认交付进度`, removes message IDs/open IDs from visible body, and omits `actor_open_id` for chat timeline items.
+  - `frontend/src/pages/ProjectListPage.tsx`: timeline metadata no longer falls back to showing raw `actor_open_id`; chat items show `群聊沉淀`.
+  - Verification: `python3 -m py_compile app/routers/projects.py` passed; frontend `npm run build` passed and generated `ProjectListPage-sNdDtuur.js`; restarted backend; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; production project `19` timeline sample now shows concise chat node titles and no message IDs/open IDs.
+
+- Codex, 2026-06-12 10:39 CST:
+  - Changed project-list row progress display rule: if a project has manually saved `workflow_nodes`, the row still shows the current node; if no workflow nodes are set, it shows the project's latest log instead of the default placeholder node.
+  - `backend/app/routers/projects.py`: added `latest_log_title` and `latest_log_at` to `ProjectRead`; list/detail project serializers populate them from the newest `ProjectLog`.
+  - `frontend/src/types/api.ts`: added the latest-log fields to `Project`.
+  - `frontend/src/pages/ProjectListPage.tsx`: outer project row now renders `当前节点: ...` only when real workflow nodes exist; otherwise renders `最新日志: ...`.
+  - Verification: `python3 -m py_compile app/routers/projects.py` passed; frontend `npm run build` passed and generated `ProjectListPage-BGX14mPp.js`; restarted backend; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; `/projects` returned 200.
+
+- Codex, 2026-06-12 09:50 CST:
+  - Changed new Xiaojuan task/project notification cards so the receipt button is a Feishu card action instead of only a web-app URL.
+  - `backend/app/services/lark_im.py`: task assignment and project-member cards now send a `receipt_ack` action with detail link context; fallback detail buttons remain.
+  - `backend/app/services/focus_card_actions.py`: handles `receipt_ack`, validates the operator as the task assignee/project member, writes `received_at`, moves todo tasks to in-progress, and returns an updated card whose button reads `已收到`.
+  - `backend/app/routers/lark_callbacks.py`: unauthorized receipt clicks return a clear toast.
+  - `backend/tests/test_smoke.py`: added regression coverage for task and project-member card receipt updates.
+  - Verification: `python3 -m py_compile app/services/lark_im.py app/services/focus_card_actions.py app/routers/lark_callbacks.py` passed; targeted tests `3 passed` for `lark_receipt_card or task_receipt`; full smoke currently still hits pre-existing scheduler/TestClient `RuntimeError: Event loop is closed`; restarted backend; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-11 16:22 CST:
+  - Normalized project-detail navigation so user-facing project buttons open the current project workbench inline detail instead of the legacy `ProjectDetailPage`.
+  - Added `frontend/src/utils/projectNavigation.ts`; changed `/projects/:project_id` route to render `ProjectListPage` and auto-expand/scroll to `project_id` from either path params or `?project_id=`.
+  - Updated project links from TodaySummary, member workload, project/task form save redirects, notification receipt redirects, project relation chips, old ProjectDetailPage relation button, and Feishu card/deep links in `lark_im.py`/`chat_cards.py`.
+  - Verification: static grep found no remaining user-facing old project detail navigation except intentional `/projects/new`; `python3 -m py_compile backend/app/services/lark_im.py backend/app/services/chat_cards.py` passed; frontend `npm run build` passed; restarted backend; `/api/health` ok; `:8081/projects?project_id=19` returned 200; backend/web services active.
+
+- Codex, 2026-06-10 21:36 CST:
+  - Re-summarized and optimized project `19` / `公安智慧教育训练平台` production logs and tasks per user request.
+  - Backed up DB before writes: `backups/insight_lab.before_project19_log_task_cleanup_.db`.
+  - Rewrote log `110` into a structured stage review covering completed work, decisions, risks, next actions, and knowledge; removed visible card/message noise and synchronized `extra_json.summary_sections`/generated task labels.
+  - Rewrote logs `111-119` from noisy "过程抽取" entries into concise business events; duplicate operation-video extraction logs now explicitly point to the single retained task.
+  - Consolidated tasks: marked delivered items done (`174`, `178`, `179`, `185`, `186`), cancelled duplicate video tasks (`180-183`) and stale AI extraction items (`172`, `173`, `175`), retained only real active todos `177` (日常训练图片上传超时) and `184` (学员端操作视频).
+  - Verification: DB readback confirmed project `19` active task pool only has tasks `177` and `184`; `/api/health` returned `{"status":"ok","db":true}`; backend and web services active.
+
+- Codex, 2026-06-10 18:36 CST:
+  - Expanded log cleanup beyond `diary:chat`: future AI/chat archival logs now rebuild body sections from semantic summaries, strip URLs, markdown headings, IDs, card fields, and raw sender/time noise before writing visible log title/body.
+  - Backed up DB before full historical rewrite: `backups/insight_lab.before_all_log_summary_rewrite_20260610_181751.db`.
+  - Rewrote historical visible log titles/bodies for AI logs `103`, `104`, `106`, chat logs `108`, `109`, `110`, group-extraction logs `111-117`, and workflow adjustment logs `91`, `93`, `96`, `98`. Raw source payloads remain only in `extra_json`/source tables, not visible log body/title.
+  - Updated smoke regression for base-chat archival to expect summarized log phrases (`确认进入实现阶段`, `补充测试结果`) instead of copied chat text.
+  - Verification: visible log scan found no `http`, card fields, or `来源消息` in title/body; full backend smoke passed `55 passed`; backend restarted; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-10 17:58 CST:
+  - Changed project chat log generation so `diary:chat` bodies render semantic summaries instead of raw Feishu topic/message text. It strips timestamps, sender prefixes, open IDs, HTML/card/image/file noise, and summarizes long topic titles before using them as log source labels.
+  - Added resolved-item tracking for chat summaries. When a strict issue is followed by later fix/verified language, the log records it under `已解决/已归档事项` with proposed/resolved times; those items are not kept as active tasks.
+  - Tightened AI follow-up task creation again: only important unresolved strict risks can become active tasks. Ordinary follow-up/confirmation text, resolved items, soft ambiguity, and low-information fragments are skipped.
+  - Backed up DB before cleanup: `backups/insight_lab.before_chat_log_task_prune_20260610_174531.db`.
+  - Rewrote historical chat logs `108`, `109`, `110`; cancelled 22 old `task_origin=ai_chat` tasks that were duplicate, resolved, or not important unresolved items. Current active AI-generated task pool has only tasks `174` and `177`, both high-priority strict unresolved risks.
+  - Verification: readback confirmed chat logs are summarized and active AI task pool is only `174`, `177`; full backend smoke passed `55 passed`; backend restarted; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-10 16:59 CST:
+  - Reworked AI generated task titles from cleaned snippets to action summaries. `_ai_followup_task_title` now applies semantic summary rules and returns no title for low-information chat fragments, so those snippets are not converted into new tasks.
+  - Added regression coverage that `登方乔的...我没...` style chat fragments do not generate tasks.
+  - Re-cleaned existing `task_origin=ai_chat` tasks after backup `backups/insight_lab.before_ai_task_summary_cleanup_20260610_165729.db`: converted remaining copied snippets into action summaries and marked tasks `168`, `172`, `176` as `cancelled` with `取消：信息不足的聊天片段`. Updated generated task references in logs `103`, `104`, `106`, `108`, `109`, `110`.
+  - Verification: readback showed all AI task titles are concise action summaries or cancelled fragments; full backend smoke passed `55 passed`; backend restarted.
+
+- Codex, 2026-06-10 16:41 CST:
+  - Tightened AI/project-chat risk detection. Generic words like `避免`, `问题`, `不完整`, or ordinary quality improvement no longer create risk sections/tasks unless paired with clear failure/blocking signals such as timeout, unavailable, error, crash, delay, security leak, blocked, or explicit high/serious risk.
+  - LLM-returned `sections.risks` are filtered by the same strict risk predicate; `log_type=risk` is downgraded to progress if no strict risk remains.
+  - AI generated task titles are compacted to <=42 chars and strip timestamps, sender prefixes, HTML tags, and ID noise before display.
+  - Cleaned existing `task_origin=ai_chat` production tasks after backup `backups/insight_lab.before_ai_task_risk_cleanup_20260610_163817.db`: 23 task titles/types were updated; only task `174` (card stuck/dead path) and `177` (upload timeout/field error) remain high-priority risk tasks. Updated generated task references in logs `103`, `104`, `106`, `108`, `109`, `110`.
+  - Verification: targeted risk/chat tests passed; full backend smoke passed `55 passed`; backend restarted.
+
+- Codex, 2026-06-10 16:05 CST:
+  - Chat summarize/backfill now auto-syncs known Feishu senders into `ProjectMember` when their `open_id` exists in the member table. Links are marked with `received_at` immediately and `tags="群聊同步"` so no manual receipt confirmation is needed.
+  - Chat project logs now include per-member contribution stats in `extra_json.chat_contribution_stats` and `extra_json.extracted.chat_contribution_stats`: message count, questions, risks/problems, solutions/progress, decisions, and action items.
+  - The visible `diary:chat` log body adds a compact `成员贡献` section for the top contributors.
+  - Verification: targeted chat summarize test passed; full backend smoke passed `54 passed`; restarted `insight-lab-backend.service`.
+
+- Codex, 2026-06-10 15:58 CST:
+  - Project Feishu chat links now distinguish whole-chat data sources (`selected_topic_key` empty) from topic data sources (`selected_topic_key=omt_*`). The same project can keep whole-chat history and multiple topic links from the same group.
+  - Added `POST /api/projects/{project_id}/chats/{project_chat_id}/summarize` to sync linked chat data and create `diary:chat` project logs. Extracted risks/actions/confirmations reuse the AI follow-up task generator and link generated task IDs into the log.
+  - Added `POST /api/projects/chats/backfill-logs` and a manager UI button `回溯项目群聊` to backfill current planning/active projects' already-linked chat data sources without duplicating existing chat logs by default.
+  - Added runtime schema migration for `project_chats` so whole-chat and topic links can coexist; production index `uq_project_chats_project_chat_topic_expr` is present.
+  - Production backfill run generated project logs `108` and `109` for the two currently linked active topic data sources in group `oc_106acdd5fdeca37e3640e6e882e00a5c`. No whole-chat data sources were already linked yet; those need project assignment via `关联整群` before history can be attributed.
+  - Verification: `python -m py_compile ...` passed; targeted project chat tests passed; full backend smoke passed `54 passed`; frontend `npm run build` passed; restarted `insight-lab-backend.service`; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-10 15:13 CST:
+  - Backfilled historical AI project logs that lacked `extra_json.generated_tasks`.
+  - Created production DB backup `backups/insight_lab.before_ai_generated_task_backfill_20260610_1509.db` before writes.
+  - Log `103` (project 15) generated tasks `151-156`; log `104` (project 16) generated task `157`. All generated tasks have `task_origin=ai_chat` and are linked back in the source logs.
+  - Verification: readback query confirmed both logs contain generated task IDs and matching task rows exist. No service restart needed for DB-only backfill.
+
+- Codex, 2026-06-10 12:55 CST:
+  - AI chat/doc archival now auto-creates project tasks from extracted risks, follow-up actions, and confirmation decisions. Generated tasks are linked to the source project log via `extra_json.generated_tasks` and inherit the matched task as parent when available.
+  - Project timeline API exposes generated task links under `item.extracted.generated_tasks`.
+  - `ProjectListPage` now renders generated task chips under AI/project-log timeline entries; clicking a chip loads/opens the task in the project task list and scrolls to it.
+  - Verification: `python3 -m py_compile ...` passed; targeted backend tests passed `3 passed`; full backend smoke passed `53 passed`; frontend `npm run build` passed; restarted `insight-lab-backend.service`; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-10 12:22 CST:
+  - Restricted Xiaojuan active AI/chat/doc archival to private-message intake: explicit Feishu group messages are ignored by `listener.py` and `/api/lark/event-callback`.
+  - Xiaojuan archive, doc-fetch-failed, unmatched-doc, and doc-watch update feedback now only uses sender DM (`send_text`), never `send_chat_text` back into a group.
+  - Added regression coverage for private archival and group-message silent ignore.
+  - Withdrew Xiaojuan message `om_x100b6db8bbcfc4acc44a2904abdd6f5` from group `oc_1f0362526d814bc43cab99857a90a27e`; follow-up list showed `deleted: true`.
+  - Verification: `python3 -m py_compile ...` passed; targeted Xiaojuan tests `5 passed`; full backend smoke `53 passed`; restarted `insight-lab-backend.service`; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-09 16:03 CST:
+  - Fixed the "sending a Feishu cloud-doc link gets no response" issue.
+  - `backend/app/services/listener.py`: cloud-doc links now bypass the old AI-transcript keyword gate; after fetching the doc, the content is always sent into archival/matching. Added explicit feedback when doc fetch fails or when the doc is read but still cannot be matched to a project.
+  - `backend/app/routers/lark_callbacks.py`: HTTP fallback path now mirrors the same behavior and feedback messages.
+  - Verification: backend pytest still passed `42 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-09 15:55 CST:
+  - Added immutable project-log correction comments: users can annotate/correct a log without editing the original log body.
+  - `backend/app/models/projects.py`: added `ProjectLogComment`; `backend/app/main.py` creates `project_log_comments`.
+  - `backend/app/routers/projects.py`: project logs/timeline items now include recent comments; added `POST /api/projects/{project_id}/logs/{log_id}/comments` with project-view permission and audit entry.
+  - `frontend/src/types/api.ts` and `frontend/src/api/projects.ts`: added project log comment types and create API.
+  - `frontend/src/pages/ProjectListPage.tsx`: project timeline log entries now show corrections and a compact `补充批注或修正` input. The original log remains read-only.
+  - Verification: new backend correction test passed; full backend pytest passed `42 passed`; frontend `npm run build` passed; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; production DB contains `project_log_comments`.
+
+- Codex, 2026-06-09 15:32 CST:
+  - Added Feishu feedback message after Xiaojuan successfully archives an AI/chat/doc input into a project log.
+  - `backend/app/services/lark_im.py`: added `send_chat_text(chat_id, text, idempotency_key)` for bot messages to the originating conversation.
+  - `backend/app/services/listener.py` and `backend/app/routers/lark_callbacks.py`: after successful AI chat submission with `applied_log_id`, sends a short confirmation containing project name, stage, summary, and log id; falls back to sender private message if chat send fails.
+  - `backend/app/services/ai_chat_ingest.py`: cloud-doc watch updates also send the same success feedback after changed docs create a new log.
+  - `backend/tests/test_smoke.py`: mocked send functions and asserted success feedback for event callback archive.
+  - Verification: targeted archive tests passed; full backend pytest passed `41 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-09 15:18 CST:
+  - Added Feishu cloud-document ingestion and automatic update watching for Xiaojuan AI chat archival.
+  - `backend/app/services/ai_chat_ingest.py`: detects Feishu cloud-doc URLs in messages, fetches document text via `lark-cli docs +fetch --as bot`, archives through the same LLM-refined project/task matching and short-log pipeline, and stores source docs as watches.
+  - New model `backend/app/models/lark_doc_watches.py`: tracks doc URL, sender/chat, matched project/task, last content hash, last submission, status/error, and check timestamps.
+  - `backend/app/main.py` and `backend/app/models/__init__.py`: create/export `LarkDocWatch`.
+  - `backend/app/services/scheduler.py`: added `sync_lark_doc_watches` interval job every 15 minutes; changed documents only create new AI submissions/project logs, unchanged documents do not duplicate logs.
+  - `backend/app/services/listener.py` and `backend/app/routers/lark_callbacks.py`: text messages containing Feishu doc links now fetch document content before ingestion; first successful linked-doc archive automatically subscribes the doc for updates.
+  - `backend/tests/test_smoke.py`: added cloud-doc link archive/watch/update coverage.
+  - Verification: targeted cloud-doc test passed; full backend pytest passed `41 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; production DB contains `lark_doc_watches`; scheduler contains `sync_lark_doc_watches`.
+
+- Codex, 2026-06-09 12:24 CST:
+  - Added DeepSeek-backed second-pass refinement for Xiaojuan AI chat transcript archiving.
+  - `backend/app/services/ai_chat_ingest.py`: after fast rule matching, builds candidate projects/tasks and asks the model to select only from those candidates, refine stage/log type, produce short summary bullets, and return reasoning. Explicit `project:123` remains locked and cannot be overridden by the model.
+  - Model failures/timeouts are non-blocking; ingestion falls back to the previous rule-based matching and short-log generation path.
+  - `ProjectLog.extra_json` now records `llm_refined` and `llm_reasoning` for AI chat logs.
+  - `backend/tests/test_smoke.py`: added coverage for model-refined project/task matching, while existing smoke tests monkeypatch the model path to avoid network dependency.
+  - Verification: targeted AI chat tests passed; full backend pytest passed `40 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-09 12:08 CST:
+  - Changed Xiaojuan AI chat project logs to short log-entry style per user feedback.
+  - `backend/app/services/ai_chat_ingest.py`: `ProjectLog.body` now starts with `YYYY-MM-DD HH:MM | stage | AI source`, then a short summary and concise bullet sections only; removed confidence/status/source trace noise from visible log body.
+  - Summary/title/bullet text is truncated so project logs do not become long paragraphs; raw transcript remains in `AIChatSubmission.raw_text`.
+  - `backend/tests/test_smoke.py`: added assertions that AI chat log lines stay short and do not include raw transcript hints.
+  - Verification: targeted AI chat tests passed; full backend pytest passed `39 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-09 12:00 CST:
+  - Added Xiaojuan support for AI chat transcripts uploaded as Feishu text files when chat input length is not enough.
+  - `backend/app/services/ai_chat_ingest.py`: added file attachment extraction and `lark-cli im +messages-resources-download` download/read path for `.txt`, `.md`, and `.markdown` files; files are limited to 1 MB and read as UTF-8 text.
+  - `backend/app/services/listener.py`: long-connection `im.message.receive_v1` now downloads supported file messages and passes file content into the same AI chat ingestion/split-summary pipeline.
+  - `backend/app/routers/lark_callbacks.py`: HTTP fallback event callback supports the same file-message path.
+  - `backend/tests/test_smoke.py`: added Markdown file-message smoke coverage.
+  - Verification: new file-message test passed; full backend pytest passed `39 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-09 11:45 CST:
+  - Cleaned historical AI chat project logs that had pasted large transcript/tool-output fragments before the split-summary fix.
+  - Database backup before cleanup: `/home/ubuntu/insight-lab-profile/backups/insight_lab.before_ai_chat_log_cleanup_20260609_113852.db`.
+  - Updated `project_logs` rows `log_id=100` and `log_id=101` to concise structured summaries; updated matching `ai_chat_submissions` summaries for `submission_id=2` and `submission_id=3`.
+  - Verification query found zero remaining AI chat project logs containing `原始记录:`, `previous messages`, `Stream err`, `<details`, `C:/Users`, or `Ran *command*`.
+
+- Codex, 2026-06-09 11:20 CST:
+  - Refined Xiaojuan AI chat transcript archiving so project logs no longer paste the full submitted transcript.
+  - `backend/app/services/ai_chat_ingest.py`: full raw text remains in `AIChatSubmission.raw_text`; `ProjectLog.body` now shows structured summary sections only: one-line summary, progress, decisions, risks/issues, follow-up actions, and knowledge notes.
+  - `backend/tests/test_smoke.py`: added regression assertions that AI chat project logs do not include the old `原始记录:` block and do include split summary sections.
+  - Verification: backend pytest passed `38 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`.
+
+- Codex, 2026-06-09 11:08 CST:
+  - Adapted AI chat transcript ingestion to the user's actual Feishu bot setup: long-connection `lark-cli event +subscribe`.
+  - `backend/app/services/listener.py`: added `im.message.receive_v1` to `EVENT_TYPES`; text messages received by Xiaojuan now call the same `ingest_ai_chat_submission` pipeline used by the HTTP callback.
+  - Added lightweight marker filtering before ingestion so ordinary messages are ignored unless they look like an AI transcript or include an explicit project marker such as `project:123` / `项目:123`.
+  - HTTP `POST /api/lark/event-callback` remains available as a fallback/debug entry, but production message intake now works through the long-connection listener.
+  - Verification: backend pytest passed `38 passed`; restarted `insight-lab-backend.service`; backend/web services active; `/api/health` returned `{"status":"ok","db":true}`; deployed `EVENT_TYPES` includes `im.message.receive_v1`.
+
+- Codex, 2026-06-09 10:55 CST:
+  - Implemented first-pass "send AI chat transcript to Xiaojuan" ingestion loop.
+  - `backend/app/models/ai_chat_submissions.py`: added `AIChatSubmission` raw transcript table with sender/message metadata, matched project/task, confidence, stage, log type, extracted JSON, status, and applied project-log id.
+  - `backend/app/services/ai_chat_ingest.py`: added rule-based AI transcript ingestion: Feishu text extraction, explicit `project:123` recognition, project/tag/description/task matching, source AI recognition, stage/log type inference, and ProjectLog creation with `resource_type=ai_chat:*`.
+  - `backend/app/routers/lark_callbacks.py`: added `POST /api/lark/event-callback` for Feishu message events; text messages are saved and converted into pending/auto-archived project logs.
+  - `backend/app/models/__init__.py` and `backend/app/main.py`: exported model and create `ai_chat_submissions` on startup.
+  - `backend/tests/test_smoke.py`: added smoke test for Feishu event callback -> AI chat submission -> matched project/task -> ProjectLog.
+  - Verification: backend pytest passed `38 passed`; restarted `insight-lab-backend.service`; `/api/health` 200; OpenAPI includes `/api/lark/event-callback`; web/backend services active.
+
+- Codex, 2026-06-09 10:10 CST:
+  - Renamed project inline detail wording from `项目时光机` to `项目日志`.
+  - `frontend/src/pages/ProjectListPage.tsx`: updated section title and failure toast copy.
+  - Verification: frontend `npm run build` passed; generated `ProjectListPage-DYFqh3yg.js`; web/backend services active and web entry responded.
+
+- Codex, 2026-06-09 09:58 CST:
+  - Further reduced inline project detail redundancy per user request.
+  - `frontend/src/pages/ProjectListPage.tsx`: removed the standalone `最近日志` panel; moved member summary into `详情信息`; moved full project member add/edit/remove controls into the collapsed `项目编辑` area; moved quick task creation from above the task list to below the task list.
+  - Verification: frontend `npm run build` passed; generated `ProjectListPage-C8RgTrKb.js`; web/backend services active and web entry responded.
+
+- Codex, 2026-06-09 09:45 CST:
+  - Trimmed inline project detail density per user request.
+  - `frontend/src/pages/ProjectListPage.tsx`: removed `项目效能` and `实时执行态势` blocks; merged `关联项目` and `项目知识` into a single default-collapsed `关联与知识` module with compact counts and existing knowledge refresh/comment/like actions preserved inside expanded state.
+  - Verification: frontend `npm run build` passed; generated `ProjectListPage-CQFFH6ZO.js`; `insight-lab-web.service` and `insight-lab-backend.service` active.
+
+- Codex, 2026-06-09 09:35 CST:
+  - Implemented Project + Diary + AI memory workflow inspired by the IM-to-project-memory discussion.
+  - Backup before changes: `/home/ubuntu/insight-lab-profile/backups/project_diary_pre_20260609_091434` containing `source.tgz`, `worktree.diff`, `git_status.txt`, and DB copy when present.
+  - `backend/app/routers/projects.py`: added `POST /api/projects/{id}/diary`, `GET /api/projects/{id}/timeline`, and `GET /api/projects/{id}/briefing`; timeline merges project logs, audit events, project tasks, meeting notes tagged `project:<id>`, and linked chat topics; diary extraction flags risk/decision/action/knowledge and mentioned members in `extra_json`.
+  - `backend/tests/test_smoke.py`: added smoke coverage for project diary creation, timeline aggregation, and briefing extraction.
+  - `frontend/src/api/projects.ts` and `frontend/src/types/api.ts`: added typed diary/timeline/briefing clients and types.
+  - `frontend/src/pages/ProjectListPage.tsx`: added `项目时光机` inside inline project detail, with 24h briefing, low-friction diary input, task association, important/confirmation flags, and unified timeline list.
+  - Verification: backend pytest passed `37 passed`; frontend `npm run build` passed; restarted `systemctl --user restart insight-lab-backend.service`; `/api/health` 200 and web entry `:8081/` returned HTML.
 
 - Codex, 2026-06-05 10:19 CST:
   - Checked CloudLab group-message clusters into round tables after pausing todo broadcast.

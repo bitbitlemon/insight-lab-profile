@@ -22,7 +22,23 @@ from app.models import ChatIntentLog, Task
 
 log = logging.getLogger(__name__)
 
-LARK_CLI = "/home/ubuntu/.npm-global/bin/lark-cli"
+import os as _os
+import shutil as _shutil
+
+
+def _resolve_lark_cli() -> str:
+    for candidate in (
+        _os.getenv("LARK_CLI_PATH"),
+        "/usr/local/bin/lark-cli",
+        "/home/ubuntu/.npm-global/bin/lark-cli",
+        "/home/ubuntu/.npm-global/lib/node_modules/@larksuite/cli/bin/lark-cli",
+    ):
+        if candidate and _os.path.exists(candidate):
+            return candidate
+    return _shutil.which("lark-cli") or "lark-cli"
+
+
+LARK_CLI = _resolve_lark_cli()
 
 
 def _toast(text: str, type_: str = "info") -> dict:

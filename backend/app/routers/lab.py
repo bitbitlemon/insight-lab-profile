@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import uuid
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -458,6 +459,13 @@ def _require_current_lark_identity(current: Member) -> dict[str, str | None]:
     return identity
 
 
+def _current_lark_identity_or_none(current: Member) -> dict[str, str | None] | None:
+    try:
+        return _require_current_lark_identity(current)
+    except HTTPException:
+        return None
+
+
 def _send_chat_text(chat_id: str, text: str, *, identity: Literal["user", "bot"] = "user") -> bool:
     args = [
         _lark_cli(),
@@ -498,9 +506,9 @@ def list_common_chats(
     _require_lab_manager(current)
     if db.get(Member, target_open_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "成员不存在")
-    _require_current_lark_identity(current)
+    identity = "user" if _current_lark_identity_or_none(current) else "bot"
     try:
-        rows = visible_chat_options(member_open_id=target_open_id, query=query, page_size=30, identity="user")
+        rows = visible_chat_options(member_open_id=target_open_id, query=query, page_size=30, identity=identity)
     except Exception:
         rows = []
     return [LabVisibleChatRead(**row) for row in rows]
@@ -545,10 +553,11 @@ def send_mention_message(
     target = db.get(Member, payload.target_open_id)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "成员不存在")
-    sender = _require_current_lark_identity(current)
     message = payload.message.strip()
     text = f'<at user_id="{target.open_id}">{target.name}</at> {message}'
-    ok = _send_chat_text(chat_id, text, identity="user")
+    sender = _require_current_lark_identity(current)
+    send_as: Literal["user", "bot"] = "user"
+    ok = _send_chat_text(chat_id, text, identity=send_as)
     if not ok:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "飞书群消息发送失败")
     return LabMentionMessageRead(
@@ -556,7 +565,7 @@ def send_mention_message(
         chat_id=chat_id,
         target_open_id=target.open_id,
         text=text,
-        send_as="user",
+        send_as=send_as,
         sender_open_id=sender.get("open_id"),
         sender_name=sender.get("name"),
     )
@@ -565,7 +574,9 @@ def send_mention_message(
 @router.get("/overview", response_model=LabOverviewRead)
 def get_lab_overview(db: Session = Depends(get_db), current: Member = Depends(get_current_user)):
     now = datetime.utcnow()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 预约时间由用户按北京时间填入(naive 存储), "今天"边界要用北京时间算, 不能用 UTC
+    local_now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow_start = today_start + timedelta(days=1)
 
     reservation_scope = []

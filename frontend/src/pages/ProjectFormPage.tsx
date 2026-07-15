@@ -1,8 +1,8 @@
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, DatePicker, Form, Input, Selector, TextArea, Toast } from "antd-mobile";
+import { Button, DatePicker, Form, Input, Picker, Selector, TextArea, Toast } from "antd-mobile";
 import type { SelectorOption } from "antd-mobile/es/components/selector";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { addProjectMember, createProject, getProject, publishProject, updateProject, type ProjectMemberInput } from "../api/projects";
 import { createTask, type TaskPayload } from "../api/tasks";
@@ -23,13 +23,30 @@ const projectTypeOptions: SelectorOption<ProjectType>[] = [
   { label: "个人项目", value: "personal" },
 ];
 
-const projectCategoryValues = ["开发", "科研", "比赛", "培训"] as const;
+const projectCategoryValues = ["论文写作", "产品研发", "项目申报", "竞赛筹备"] as const;
 type ProjectCategory = (typeof projectCategoryValues)[number];
 
-const projectCategoryOptions: SelectorOption<ProjectCategory>[] = projectCategoryValues.map((value) => ({
+const projectCategoryOptions: Array<{ label: string; value: ProjectCategory }> = projectCategoryValues.map((value) => ({
   label: value,
   value,
 }));
+
+const projectCategoryFlowPreview: Record<ProjectCategory, string[]> = {
+  论文写作: ["启动阶段：找参考/找选题/找指导/找队友", "设计阶段：方法创新设计/模型结构设计", "验证阶段：baseline实验验证", "内测阶段：论文初稿/实验补充", "迭代阶段：论文修改/补实验", "交付阶段：投稿论文", "归档阶段：代码+实验复现包"],
+  产品研发: ["启动阶段：需求分析/PRD初稿", "设计阶段：系统架构设计/UI设计", "验证阶段：MVP/demo验证", "内测阶段：内测版本/bug记录", "迭代阶段：功能优化/版本迭代", "交付阶段：正式上线版本", "归档阶段：技术文档/知识沉淀"],
+  项目申报: ["启动阶段：找参考/找选题/找指导/找队友", "设计阶段：技术路线设计/申报书结构设计", "验证阶段：可行性分析验证", "内测阶段：申报书初稿/内部修改评审", "迭代阶段：申报书修订优化", "交付阶段：正式提交申报材料", "归档阶段：经验总结/模板沉淀"],
+  竞赛筹备: ["启动阶段：赛题分析/立项+报名/找队友", "设计阶段：竞赛方案设计", "验证阶段：demo验证", "内测阶段：作品初稿/PPT制作", "迭代阶段：冲刺优化", "交付阶段：最终提交材料", "归档阶段：竞赛复盘"],
+};
+
+const legacyProjectCategoryMap: Record<string, ProjectCategory> = {
+  科研: "论文写作",
+  论文撰写: "论文写作",
+  开发: "产品研发",
+  平台开发: "产品研发",
+  申报: "项目申报",
+  竞赛: "竞赛筹备",
+  竞赛管理: "竞赛筹备",
+};
 
 const splitTags = (value?: string | null) =>
   (value || "")
@@ -38,12 +55,15 @@ const splitTags = (value?: string | null) =>
     .filter(Boolean);
 
 const readProjectCategory = (tags?: string | null): ProjectCategory => {
-  const found = splitTags(tags).find((tag): tag is ProjectCategory => projectCategoryValues.includes(tag as ProjectCategory));
-  return found || "开发";
+  for (const tag of splitTags(tags)) {
+    if (projectCategoryValues.includes(tag as ProjectCategory)) return tag as ProjectCategory;
+    if (legacyProjectCategoryMap[tag]) return legacyProjectCategoryMap[tag];
+  }
+  return "论文写作";
 };
 
 const readExtraTags = (tags?: string | null): string => {
-  const categorySet = new Set<string>(projectCategoryValues);
+  const categorySet = new Set<string>([...projectCategoryValues, ...Object.keys(legacyProjectCategoryMap)]);
   return splitTags(tags).filter((tag) => !categorySet.has(tag)).join(", ");
 };
 
@@ -65,6 +85,24 @@ const projectFormStyles = `
     white-space: normal;
     overflow: visible;
     text-overflow: clip;
+  }
+  .project-category-trigger {
+    min-height: 46px;
+    border: 1px solid #E5E6EB;
+    border-radius: 10px;
+    background: #F7F8FA;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 14px;
+    color: #1F2329;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .project-category-trigger span:last-child {
+    color: #8F959E;
+    font-size: 16px;
   }
 `;
 
@@ -123,9 +161,11 @@ const extractMessage = (err: unknown): string => {
 const ProjectFormPage = () => {
   const navigate = useNavigate();
   const { project_id } = useParams();
+  const [searchParams] = useSearchParams();
   const { me, loading: authLoading } = useAuth();
   const { members: allMembers } = useMemberDirectory();
   const isEdit = Boolean(project_id);
+  const embedded = searchParams.get("embedded") === "1";
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [pageLoading, setPageLoading] = useState(isEdit);
@@ -133,7 +173,13 @@ const ProjectFormPage = () => {
   const [projectType, setProjectType] = useState<ProjectType>("team");
   const [memberDrafts, setMemberDrafts] = useState<MemberDraft[]>([]);
   const [taskDrafts, setTaskDrafts] = useState<TaskDraft[]>([]);
-  const submitIntentRef = useRef<"draft" | "publish">("draft");
+  const [showProjectOptions, setShowProjectOptions] = useState(isEdit);
+  const [showMemberOptions, setShowMemberOptions] = useState(isEdit);
+  const [showTaskOptions, setShowTaskOptions] = useState(false);
+  const submitIntentRef = useRef<"draft" | "publish">("publish");
+  const watchedProjectCategory = Form.useWatch("project_category", form);
+  const watchedOwnerOpenId = Form.useWatch("owner_open_id", form);
+  const activeProjectCategory = (Array.isArray(watchedProjectCategory) ? watchedProjectCategory[0] : "论文写作") as ProjectCategory;
 
   useEffect(() => {
     if (!isEdit || !project_id) return;
@@ -147,6 +193,7 @@ const ProjectFormPage = () => {
         form.setFieldsValue({
           name: project.name,
           description: project.description || "",
+          owner_open_id: project.owner_open_id,
           project_type: [project.project_type || "team"],
           project_category: [readProjectCategory(project.tags)],
           priority: [project.priority],
@@ -183,6 +230,11 @@ const ProjectFormPage = () => {
     };
   }, [form, isEdit, project_id]);
 
+  useEffect(() => {
+    if (!watchedOwnerOpenId) return;
+    setMemberDrafts((prev) => prev.filter((member) => member.member_open_id !== watchedOwnerOpenId));
+  }, [watchedOwnerOpenId]);
+
   const departmentOptions = useMemo<SelectorOption<string>[]>(
     () =>
       Array.from(new Set(allMembers.map((member) => member.department?.trim()).filter((item): item is string => Boolean(item))))
@@ -207,6 +259,19 @@ const ProjectFormPage = () => {
     });
   };
 
+  const postEmbeddedMessage = (type: "insight-project-create:close" | "insight-project-create:created", projectId?: number) => {
+    if (!embedded || window.parent === window) return;
+    window.parent.postMessage({ type, projectId }, window.location.origin);
+  };
+
+  const exitPage = () => {
+    if (embedded) {
+      postEmbeddedMessage("insight-project-create:close");
+      return;
+    }
+    navigate(-1);
+  };
+
   const appendMemberDraft = (values: Record<string, unknown>) => {
     const memberOpenId = String(values.member_open_id || "").trim();
     if (!memberOpenId) {
@@ -215,6 +280,10 @@ const ProjectFormPage = () => {
     }
     if (memberDrafts.some((item) => item.member_open_id === memberOpenId)) {
       Toast.show({ icon: "fail", content: "该成员已在列表中" });
+      return;
+    }
+    if (memberOpenId === watchedOwnerOpenId) {
+      Toast.show({ icon: "fail", content: "负责人不用重复加入参与人" });
       return;
     }
     setMemberDrafts((prev) =>
@@ -302,11 +371,12 @@ const ProjectFormPage = () => {
     const payload = {
       name: String(values.name || "").trim(),
       description: String(values.description || "").trim() || null,
+      owner_open_id: String(values.owner_open_id || me.open_id).trim() || me.open_id,
       project_type: (Array.isArray(values.project_type) ? values.project_type[0] : projectType) as ProjectType,
       priority: (Array.isArray(values.priority) ? values.priority[0] : "medium") as ProjectPriority,
       department: String(Array.isArray(values.department) ? values.department[0] || "" : values.department || "").trim() || null,
       target_end_date: values.target_end_date instanceof Date ? toLocalDateTimePayload(values.target_end_date) : null,
-      tags: buildProjectTags((Array.isArray(values.project_category) ? values.project_category[0] : "开发") as ProjectCategory, values.tags),
+      tags: buildProjectTags((Array.isArray(values.project_category) ? values.project_category[0] : "论文写作") as ProjectCategory, values.tags),
       points_awarded: isEdit ? project?.points_awarded ?? 0 : 0,
     };
 
@@ -343,6 +413,10 @@ const ProjectFormPage = () => {
           await publishProject(project_id);
         }
         Toast.show({ icon: "success", content: shouldPublish ? "项目已发布并通知成员" : "项目已保存" });
+        if (embedded) {
+          postEmbeddedMessage("insight-project-create:created", Number(project_id));
+          return;
+        }
         navigate(`/projects/${project_id}`);
         return;
       }
@@ -368,6 +442,10 @@ const ProjectFormPage = () => {
             ? "项目和初始任务已暂存"
             : "项目已暂存",
       });
+      if (embedded) {
+        postEmbeddedMessage("insight-project-create:created", created.project_id);
+        return;
+      }
       navigate(`/projects/${created.project_id}`);
     } catch (err) {
       Toast.show({ icon: "fail", content: extractMessage(err) });
@@ -396,22 +474,24 @@ const ProjectFormPage = () => {
     <PageShell>
       <style>{projectFormStyles}</style>
       <div className="project-form-page" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 96 }}>
-        <Button
-          fill="none"
-          style={{ alignSelf: "flex-start", padding: 0, "--text-color": colors.primaryDeep } as CSSProperties}
-          onClick={() => navigate(-1)}
-        >
-          {"< 返回"}
-        </Button>
+        {!embedded ? (
+          <Button
+            fill="none"
+            style={{ alignSelf: "flex-start", padding: 0, "--text-color": colors.primaryDeep } as CSSProperties}
+            onClick={exitPage}
+          >
+            {"< 返回"}
+          </Button>
+        ) : null}
         <div style={{ fontSize: 24, fontWeight: 800, color: colors.title }}>{isEdit ? "编辑项目" : "新建项目"}</div>
 
         <Form
           form={form}
           layout="vertical"
           onFinish={onFinish}
-          initialValues={{ project_type: ["team"], project_category: ["开发"], priority: ["medium"] }}
+          initialValues={{ owner_open_id: me.open_id, project_type: ["team"], project_category: ["论文写作"], priority: ["medium"] }}
           footer={
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isEdit ? "1fr 1fr" : "0.8fr 1.2fr", gap: 10 }}>
               <Button
                 block
                 loading={submitting && submitIntentRef.current === "draft"}
@@ -420,7 +500,7 @@ const ProjectFormPage = () => {
                   form.submit();
                 }}
               >
-                {isEdit ? "保存修改" : "暂存项目"}
+                {isEdit ? "保存修改" : "保存草稿"}
               </Button>
               <Button
                 block
@@ -431,7 +511,7 @@ const ProjectFormPage = () => {
                   form.submit();
                 }}
               >
-                确认发布
+                {isEdit ? "确认发布" : "创建项目"}
               </Button>
             </div>
           }
@@ -442,8 +522,8 @@ const ProjectFormPage = () => {
               <Form.Item name="name" label="项目名称" rules={[{ required: true, message: "请填写项目名称" }]}>
                 <Input placeholder="例如：实验室知识库升级" clearable />
               </Form.Item>
-              <Form.Item name="description" label="项目描述">
-                <TextArea placeholder="补充背景、目标、阶段安排" autoSize={{ minRows: 3, maxRows: 6 }} />
+              <Form.Item name="owner_open_id" label="项目负责人" rules={[{ required: true, message: "请选择项目负责人" }]}>
+                <MemberPicker placeholder="搜索负责人姓名 / 部门" />
               </Form.Item>
               <Form.Item name="project_type" label="项目类型">
                 <Selector
@@ -459,14 +539,24 @@ const ProjectFormPage = () => {
                   }}
                 />
               </Form.Item>
-              <Form.Item name="project_category" label="分类标签" rules={[{ required: true, message: "请选择分类标签" }]}>
-                <Selector options={projectCategoryOptions} columns={4} showCheckMark={false} />
-              </Form.Item>
-              <Form.Item name="priority" label="优先级">
-                <Selector options={priorityOptions} columns={4} showCheckMark={false} />
-              </Form.Item>
-              <Form.Item name="department" label="所属部门">
-                <Selector options={departmentOptions} columns={2} showCheckMark={false} />
+              <Form.Item
+                name="project_category"
+                label="项目类别"
+                trigger="onConfirm"
+                rules={[{ required: true, message: "请选择项目类别" }]}
+                onClick={(_, ref) => ref.current?.open()}
+              >
+                <Picker columns={[projectCategoryOptions]}>
+                  {(value) => {
+                    const selected = value?.[0]?.label || "请选择项目类别";
+                    return (
+                      <div className="project-category-trigger">
+                        <span>{selected}</span>
+                        <span>⌄</span>
+                      </div>
+                    );
+                  }}
+                </Picker>
               </Form.Item>
               <Form.Item
                 name="target_end_date"
@@ -491,9 +581,51 @@ const ProjectFormPage = () => {
                   )}
                 </DatePicker>
               </Form.Item>
-              <Form.Item name="tags" label="额外标签">
-                <Input placeholder="例如：前端, 知识库, 自动化" clearable />
-              </Form.Item>
+              <Button
+                fill="outline"
+                size="small"
+                onClick={() => setShowProjectOptions((prev) => !prev)}
+              >
+                {showProjectOptions ? "收起更多设置" : "更多设置（可选）"}
+              </Button>
+              {showProjectOptions ? (
+                <>
+                  <Form.Item name="description" label="项目描述">
+                    <TextArea placeholder="补充背景、目标、阶段安排" autoSize={{ minRows: 3, maxRows: 6 }} />
+                  </Form.Item>
+                  <div
+                    style={{
+                      marginTop: -6,
+                      marginBottom: 8,
+                      border: `1px solid ${colors.border}`,
+                      borderRadius: 10,
+                      background: "#f8fbff",
+                      padding: 12,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: colors.title }}>自动关联审批流程</span>
+                      <span style={chipStyle("#e0f2fe", "#0369a1", 700)}>{activeProjectCategory}</span>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {projectCategoryFlowPreview[activeProjectCategory].map((node, index) => (
+                        <span key={node} style={chipStyle("#ffffff", "#475569", 600)}>
+                          {index + 1}. {node}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <Form.Item name="priority" label="优先级">
+                    <Selector options={priorityOptions} columns={4} showCheckMark={false} />
+                  </Form.Item>
+                  <Form.Item name="department" label="所属部门">
+                    <Selector options={departmentOptions} columns={2} showCheckMark={false} />
+                  </Form.Item>
+                  <Form.Item name="tags" label="额外标签">
+                    <Input placeholder="例如：前端, 知识库, 自动化" clearable />
+                  </Form.Item>
+                </>
+              ) : null}
             </div>
           </div>
 
@@ -503,11 +635,15 @@ const ProjectFormPage = () => {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 15, fontWeight: 700, color: colors.title }}>执行成员</div>
-                    <div style={{ marginTop: 4, color: colors.muted, fontSize: 12 }}>团队项目用于多人协作和管理视角；实际动手推进的人放在这里</div>
+                    <div style={{ marginTop: 4, color: colors.muted, fontSize: 12 }}>不填也可以创建，后续可在项目详情里补充</div>
                   </div>
-                <span style={chipStyle("#eef2ff", "#4338ca")}>当前 {memberDrafts.length} 人</span>
+                <Button size="small" fill="outline" onClick={() => setShowMemberOptions((prev) => !prev)}>
+                  {showMemberOptions ? "收起" : `添加成员（${memberDrafts.length}）`}
+                </Button>
               </div>
 
+              {showMemberOptions ? (
+                <>
               <div
                 style={{
                   borderRadius: 12,
@@ -523,7 +659,10 @@ const ProjectFormPage = () => {
               </div>
 
               <Form.Item name="member_open_id" label="成员">
-                <MemberPicker placeholder="搜索成员姓名 / 部门" excludeOpenIds={memberDrafts.map((member) => member.member_open_id)} />
+                <MemberPicker
+                  placeholder="搜索成员姓名 / 部门"
+                  excludeOpenIds={[watchedOwnerOpenId, ...memberDrafts.map((member) => member.member_open_id)].filter(Boolean) as string[]}
+                />
               </Form.Item>
               <Form.Item name="member_tags" label="标签">
                 <Input placeholder="例如：算法, 前端, 数据标注；默认标签为参与者" clearable />
@@ -590,6 +729,8 @@ const ProjectFormPage = () => {
                   ))
                 )}
               </div>
+                </>
+              ) : null}
             </div>
           </div>
           ) : (
@@ -609,17 +750,23 @@ const ProjectFormPage = () => {
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 15, fontWeight: 700, color: colors.title }}>初始任务</div>
-                    <div style={{ marginTop: 4, color: colors.muted, fontSize: 12 }}>创建项目时一起挂到今日待办或近期计划</div>
+                    <div style={{ marginTop: 4, color: colors.muted, fontSize: 12 }}>可选，不填也能创建项目</div>
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <Button size="small" fill="outline" onClick={applyTaskTemplate}>
-                      用模板
-                    </Button>
-                    <Button size="small" color="primary" onClick={() => appendTaskDraft()}>
-                      ＋ 添加任务
-                    </Button>
-                  </div>
+                  <Button size="small" fill="outline" onClick={() => setShowTaskOptions((prev) => !prev)}>
+                    {showTaskOptions ? "收起" : `添加任务（${taskDrafts.length}）`}
+                  </Button>
                 </div>
+
+                {showTaskOptions ? (
+                  <>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Button size="small" fill="outline" onClick={applyTaskTemplate}>
+                        用模板
+                      </Button>
+                      <Button size="small" color="primary" onClick={() => appendTaskDraft()}>
+                        ＋ 添加任务
+                      </Button>
+                    </div>
 
                 {taskDrafts.length === 0 ? (
                   <div style={{ color: colors.muted, fontSize: 12 }}>还没有初始任务，可直接添加或使用模板</div>
@@ -707,6 +854,8 @@ const ProjectFormPage = () => {
                     })}
                   </div>
                 )}
+                  </>
+                ) : null}
               </div>
             </div>
           ) : null}

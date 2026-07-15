@@ -1,4 +1,4 @@
-"""群聊智能提取: 从 ProjectChatMessage 抽取 create_task / complete_task 意图.
+"""群聊智能提取: 从 ProjectChatMessage 抽取 create_task 意图.
 
 流程:
   1. 找未处理的消息 (没有对应 ChatIntentLog 的 source_message_id)
@@ -208,9 +208,9 @@ def _build_context(
 
 SYSTEM_PROMPT = (
     "你是实验室群聊待办抽取助手. 给定一组连续的群聊消息 (target_messages) 和之前的上下文 "
-    "(context_messages), 抽取出明确的待办意图. 只关心两类:\n"
+    "(context_messages), 只抽取明确的新待办意图:\n"
     "  - create_task: 有人明确要做某件事, 或被指派做某事 (含 @某人 派活, 自述将做, '明天我..' 等)\n"
-    "  - complete_task: 有人明确完成了一件事 (常见: 【总结】今日... 已完成... 解决了...)\n"
+    "已经完成、疑似完成、复盘总结、进展汇报只作为上下文, 不产出 intent.\n"
     "其余闲聊/吐槽/无明确动作 → 不产出 intent (返回空 intents).\n\n"
     "重要约束:\n"
     "  - 严格 JSON, 不要 markdown. 无意图返回 {\"intents\": []}\n"
@@ -219,14 +219,13 @@ SYSTEM_PROMPT = (
     "  - assignee_name 必须从 candidate_members.name 中选, 写中文名 (如 '潘浩宇'); 找不到给 null\n"
     "  - due_date ISO 日期或 null. '明天' '今天' 按 current_time 推算\n"
     "  - confidence 0-1: 越明确越高 (有明确动词 + 主体 + 对象 → 0.9; 模糊 → 0.5; 闲聊 → 不产出)\n"
-    "  - complete_task 必须从 active_tasks 中选 matched_task_id (找不到对应 task → 不产出 complete_task, 改判 create_task 已完成)\n"
     "  - source_message_id 必须是 target_messages 中某条的 message_id, 表示意图来源\n"
     "  - reasoning 一句中文解释 (≤40 字)\n\n"
     "输出 schema:\n"
     "{\n"
     '  "intents": [\n'
     "    {\n"
-    '      "kind": "create_task" | "complete_task",\n'
+    '      "kind": "create_task",\n'
     '      "title": "string",\n'
     '      "description": "string|null",\n'
     '      "assignee_name": "string|null",\n'
@@ -289,7 +288,7 @@ def _persist_intents(
     for item in raw_intents:
         try:
             kind = item.get("kind")
-            if kind not in ("create_task", "complete_task"):
+            if kind != "create_task":
                 continue
             sid = item.get("source_message_id")
             if sid not in target_ids:
@@ -308,12 +307,6 @@ def _persist_intents(
             matched_task_id = item.get("matched_task_id")
             if isinstance(matched_task_id, str) and matched_task_id.isdigit():
                 matched_task_id = int(matched_task_id)
-            if kind == "complete_task" and not matched_task_id:
-                matched_task_id = _fuzzy_match_task(title, active_tasks)
-            if kind == "complete_task" and not matched_task_id:
-                # 明确完成但找不到对应 task → 降为 create+complete 二合一逻辑: 直接记为 create_task 高优先级 done
-                # 简化: 跳过此 intent, 改在 source 里转 create_task
-                kind = "create_task"
             due_date = None
             if item.get("due_date"):
                 try:
@@ -326,7 +319,7 @@ def _persist_intents(
 
             # 自动落地阈值; 但 assignee 解析失败 → 强降 pending
             status = "pending"
-            if confidence >= CONFIDENCE_AUTO and (kind == "complete_task" or assignee_open_id):
+            if confidence >= CONFIDENCE_AUTO and assignee_open_id:
                 status = "auto_applied"
             elif confidence < CONFIDENCE_PENDING:
                 # 留 trace 但不参与审批
@@ -496,11 +489,10 @@ def apply_intent(db: Session, intent: ChatIntentLog, actor_open_id: str) -> Chat
             actor_open_id=actor_open_id,
             kind="note",
             status="recorded",
-            title=f"群聊抽取: 新任务「{task.title}」",
-            body=(f"AI 从群聊抽取: {intent.reasoning or ''}\n"
+            title=f"过程抽取: 新任务「{task.title}」",
+            body=(f"AI 过程抽取: {intent.reasoning or ''}\n"
                   f"指派: {intent.assignee_name_raw or '未指派'}\n"
-                  f"置信度: {intent.confidence:.2f}\n"
-                  f"来源消息: {intent.source_message_id}"),
+                  f"置信度: {intent.confidence:.2f}"),
         )
         db.add(plog)
         db.flush()
@@ -508,24 +500,12 @@ def apply_intent(db: Session, intent: ChatIntentLog, actor_open_id: str) -> Chat
         intent.applied_log_id = plog.log_id
 
     elif intent.intent_kind == "complete_task" and intent.matched_task_id:
-        task = db.get(Task, intent.matched_task_id)
-        if task and task.status != "done":
-            task.status = "done"
-            task.completed_at = datetime.utcnow()
-        plog = ProjectLog(
-            project_id=intent.project_id,
-            actor_open_id=actor_open_id,
-            kind="note",
-            status="recorded",
-            title=f"群聊抽取: 任务完成「{intent.title}」",
-            body=(f"AI 从群聊抽取: {intent.reasoning or ''}\n"
-                  f"置信度: {intent.confidence:.2f}\n"
-                  f"来源消息: {intent.source_message_id}"),
-        )
-        db.add(plog)
-        db.flush()
-        intent.applied_task_id = intent.matched_task_id
-        intent.applied_log_id = plog.log_id
+        intent.status = "rejected"
+        intent.reasoning = ((intent.reasoning or "") + "；已停用 AI 完成识别").strip("；")
+        intent.applied_at = datetime.utcnow()
+        intent.reviewer_open_id = actor_open_id
+        db.commit()
+        return intent
 
     if intent.status != "auto_applied":
         intent.status = "applied"
@@ -539,7 +519,7 @@ def apply_auto_intents(db: Session, chat: ProjectChat, actor_open_id: str) -> in
     """把当前 chat 下所有 status=auto_applied 但还没落地的意图执行.
 
     create_task: 直接落地 (建任务).
-    complete_task: 不直接落地, 发实时校验卡到群里, 等用户点确认.
+    complete_task: 已停用, 不再发完成确认卡.
     """
     rows = db.execute(
         select(ChatIntentLog).where(
@@ -552,14 +532,9 @@ def apply_auto_intents(db: Session, chat: ProjectChat, actor_open_id: str) -> in
     for r in rows:
         try:
             if r.intent_kind == "complete_task":
-                # 改派给 chat_cards 发卡, 等用户点确认才真完成
-                from .chat_cards import send_completion_confirm_card
-                from app.models import Task
-                if r.matched_task_id:
-                    task = db.get(Task, r.matched_task_id)
-                    if task:
-                        send_completion_confirm_card(db, chat, task, r)
-                # 不计入 n, 保持 status=auto_applied 直到用户点确认才 -> applied
+                r.status = "rejected"
+                r.reasoning = ((r.reasoning or "") + "；已停用 AI 完成识别").strip("；")
+                db.commit()
                 continue
             apply_intent(db, r, actor_open_id)
             n += 1

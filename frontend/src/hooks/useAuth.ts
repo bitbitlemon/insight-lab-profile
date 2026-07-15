@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getMe, larkLogin as requestLarkLogin } from "../api/auth";
+import { browserLogin as requestBrowserLogin, getMe, larkLogin as requestLarkLogin } from "../api/auth";
 import { getLarkCode } from "../utils/lark";
 import type { Member } from "../types/api";
 
@@ -28,6 +28,12 @@ export const useAuth = () => {
 
 export const larkLogin = async (code: string) => {
   const response = await requestLarkLogin(code);
+  localStorage.setItem("jwt", response.token);
+  return response.user;
+};
+
+export const browserLogin = async (identifier: string, passcode?: string) => {
+  const response = await requestBrowserLogin(identifier, passcode);
   localStorage.setItem("jwt", response.token);
   return response.user;
 };

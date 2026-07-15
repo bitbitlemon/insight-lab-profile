@@ -4,9 +4,11 @@ import { ConfigProvider } from "antd-mobile";
 import App from "./App";
 import "antd-mobile/es/global";
 
+const routerBase = import.meta.env.BASE_URL.replace(/\/$/, "");
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <ConfigProvider>
-    <BrowserRouter>
+    <BrowserRouter basename={routerBase}>
       <App />
     </BrowserRouter>
   </ConfigProvider>,

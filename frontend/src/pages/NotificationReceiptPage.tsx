@@ -5,11 +5,12 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { receiveProjectMember } from "../api/projects";
 import { receiveTask } from "../api/tasks";
 import { PageShell, SectionLoading, colors, sectionCardStyle } from "../components/ui";
+import { normalizeProjectWorkbenchPath, projectWorkbenchPath } from "../utils/projectNavigation";
 
 const safeRedirectPath = (value: string | null, fallback: string) => {
   if (!value) return fallback;
   if (!value.startsWith("/") || value.startsWith("//") || value.includes("://")) return fallback;
-  return value;
+  return normalizeProjectWorkbenchPath(value);
 };
 
 const NotificationReceiptPage = () => {
@@ -17,7 +18,7 @@ const NotificationReceiptPage = () => {
   const [params] = useSearchParams();
   const kind = params.get("kind");
   const id = params.get("id") || "";
-  const fallbackPath = kind === "task" ? "/board" : id ? `/projects/${id}` : "/projects";
+  const fallbackPath = kind === "task" ? "/board" : id ? projectWorkbenchPath(id) : "/projects";
   const targetPath = safeRedirectPath(params.get("redirect"), fallbackPath);
   const [loading, setLoading] = useState(true);
   const [success, setSuccess] = useState(false);

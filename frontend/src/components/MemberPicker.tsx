@@ -125,6 +125,38 @@ const getCurrentViewerKey = () => {
 
 const getFrequencyStorageKey = () => `${MEMBER_PICKER_FREQUENCY_PREFIX}:${getCurrentViewerKey()}`;
 
+const pinyinBoundaries: Array<[string, string]> = [
+  ["a", "阿"], ["b", "八"], ["c", "嚓"], ["d", "咑"], ["e", "妸"], ["f", "发"],
+  ["g", "旮"], ["h", "哈"], ["j", "讥"], ["k", "咔"], ["l", "垃"], ["m", "妈"],
+  ["n", "拿"], ["o", "噢"], ["p", "啪"], ["q", "期"], ["r", "然"], ["s", "撒"],
+  ["t", "他"], ["w", "挖"], ["x", "昔"], ["y", "压"], ["z", "匝"],
+];
+
+export const getChineseInitials = (value?: string | null) => {
+  if (!value) return "";
+  return Array.from(value).map((char) => {
+    const lower = char.toLowerCase();
+    if (/^[a-z0-9]$/.test(lower)) return lower;
+    for (let index = pinyinBoundaries.length - 1; index >= 0; index -= 1) {
+      const [letter, boundary] = pinyinBoundaries[index];
+      if (char.localeCompare(boundary, "zh-Hans-CN") >= 0) return letter;
+    }
+    return "";
+  }).join("");
+};
+
+export const getMemberSearchText = (member: Member) => [
+  member.name,
+  getChineseInitials(member.name),
+  member.en_name,
+  member.department,
+  getChineseInitials(member.department),
+  member.title,
+  member.position,
+  member.open_id,
+  member.email,
+].filter(Boolean).join(" ").toLowerCase();
+
 const readMemberFrequency = (): Record<string, number> => {
   try {
     const raw = localStorage.getItem(getFrequencyStorageKey());
@@ -193,7 +225,7 @@ const MemberPicker = ({
       }
       const name = member.name?.toLowerCase() ?? "";
       const department = member.department?.toLowerCase() ?? "";
-      return name.includes(normalizedKeyword) || department.includes(normalizedKeyword);
+      return name.includes(normalizedKeyword) || department.includes(normalizedKeyword) || getMemberSearchText(member).includes(normalizedKeyword);
     });
 
     const compareMembers = (left: Member, right: Member) => {

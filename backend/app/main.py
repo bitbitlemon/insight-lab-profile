@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,21 +9,12 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .config import settings
-from .routers import health, auth, sync as sync_router, members, papers, meeting_notes, auto_minute, audit, competitions, contributions, points, projects, tasks, calendar as calendar_router, stats, awards, trainings, advising, grants, industrial, penalties, product_stages, paper_milestones, paper_external, files as files_router, gallery, a_class_achievements as a_class_router, moments as moments_router, voice, lab as lab_router, lark_callbacks, chat_insights, ai_assistants, usage as usage_router, project_report
-from .services.scheduler import start_scheduler, stop_scheduler
-from .services.listener import start_listener, stop_listener
-from .services.audit import install_audit_listeners
-from .services.zhangqian_log import _fetch_all_records
-from .services.a_class_log import fetch_all as fetch_a_class_all
+from .routers import health, auth, sync as sync_router, members, papers, meeting_notes, auto_minute, audit, competitions, contributions, points, projects, tasks, calendar as calendar_router, stats, awards, trainings, advising, grants, industrial, penalties, product_stages, paper_milestones, paper_external, files as files_router, gallery, a_class_achievements as a_class_router, moments as moments_router, voice, assistant, lab as lab_router, lark_callbacks, chat_insights, ai_assistants, usage as usage_router, project_report, public_calendar, permissions as permissions_router, approval_rules, stage_templates, bitable
+from .services.background import initialize_runtime, start_background_services, stop_background_services
 from .middleware import BodySizeLimitMiddleware, SlowRequestLogMiddleware, limiter
-from sqlalchemy import text
-from .db import engine
-from .models import AIAssistantConfig, AppPresence, AppUsageDaily, Contribution, ContributionComment, LabDailyReport, LabInteraction, LabMessageConfig, LabOccupancy, LabReservation, LabResource, LabSpace, LarkUserStatus, ProjectLog, ProjectRelation, SnakeScore
 
 _log = logging.getLogger(__name__)
 
-# zhangqian 全表缓存 TTL=600s, 提前 120s 续期, 避免用户在窗口边缘踩到 cache miss
-_ZHANGQIAN_PREWARM_INTERVAL = 480.0
 _IMMUTABLE_ASSET_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
 _NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
 
@@ -37,93 +27,20 @@ class CachedStaticFiles(StaticFiles):
         return response
 
 
-async def _prewarm_zhangqian_loop():
-    while True:
-        try:
-            n = len(await _fetch_all_records(force=True))
-            _log.info("zhangqian prewarm: %d records cached", n)
-        except Exception:
-            _log.exception("zhangqian prewarm failed (will retry)")
-        await asyncio.sleep(_ZHANGQIAN_PREWARM_INTERVAL)
-
-
-async def _prewarm_a_class_loop():
-    while True:
-        try:
-            n = len(await fetch_a_class_all(force=True))
-            _log.info("a_class prewarm: %d items cached", n)
-        except Exception:
-            _log.exception("a_class prewarm failed (will retry)")
-        await asyncio.sleep(_ZHANGQIAN_PREWARM_INTERVAL)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    ProjectLog.__table__.create(bind=engine, checkfirst=True)
-    ProjectRelation.__table__.create(bind=engine, checkfirst=True)
-    ContributionComment.__table__.create(bind=engine, checkfirst=True)
-    AIAssistantConfig.__table__.create(bind=engine, checkfirst=True)
-    LarkUserStatus.__table__.create(bind=engine, checkfirst=True)
-    LabSpace.__table__.create(bind=engine, checkfirst=True)
-    LabResource.__table__.create(bind=engine, checkfirst=True)
-    LabReservation.__table__.create(bind=engine, checkfirst=True)
-    LabOccupancy.__table__.create(bind=engine, checkfirst=True)
-    LabInteraction.__table__.create(bind=engine, checkfirst=True)
-    LabMessageConfig.__table__.create(bind=engine, checkfirst=True)
-    LabDailyReport.__table__.create(bind=engine, checkfirst=True)
-    AppPresence.__table__.create(bind=engine, checkfirst=True)
-    AppUsageDaily.__table__.create(bind=engine, checkfirst=True)
-    SnakeScore.__table__.create(bind=engine, checkfirst=True)
-    with engine.begin() as conn:
-        lab_interactions_sql = conn.execute(
-            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='lab_interactions'")
-        ).scalar()
-        if lab_interactions_sql and any(kind not in lab_interactions_sql for kind in ("hammer", "whip", "water", "paper_airplane", "firework")):
-            conn.execute(text("ALTER TABLE lab_interactions RENAME TO lab_interactions_old"))
-            conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_target"))
-            conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_actor"))
-            conn.execute(text("DROP INDEX IF EXISTS idx_lab_interactions_created"))
-            LabInteraction.__table__.create(bind=conn, checkfirst=True)
-            conn.execute(text(
-                "INSERT INTO lab_interactions (interaction_id, target_open_id, actor_open_id, kind, note, created_at) "
-                "SELECT interaction_id, target_open_id, actor_open_id, kind, note, created_at FROM lab_interactions_old"
-            ))
-            conn.execute(text("DROP TABLE lab_interactions_old"))
-        for table in ("projects", "tasks"):
-            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-            if not rows:
-                continue
-            columns = {row[1] for row in rows}
-            if "publication_status" not in columns:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN publication_status VARCHAR NOT NULL DEFAULT 'draft'"))
-            if table == "tasks":
-                if "today_todo_date" not in columns:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN today_todo_date DATE"))
-                if "thinking" not in columns:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN thinking TEXT"))
-                if "progress_draft" not in columns:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN progress_draft TEXT"))
-                if "task_origin" not in columns:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN task_origin VARCHAR NOT NULL DEFAULT 'manual'"))
-        contribution_rows = conn.execute(text("PRAGMA table_info(contributions)")).fetchall()
-        if contribution_rows:
-            contribution_columns = {row[1] for row in contribution_rows}
-            if "like_count" not in contribution_columns:
-                conn.execute(text("ALTER TABLE contributions ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0"))
-            if "comment_count" not in contribution_columns:
-                conn.execute(text("ALTER TABLE contributions ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0"))
-    install_audit_listeners()
-    start_scheduler()
-    start_listener()
-    prewarm_task = asyncio.create_task(_prewarm_zhangqian_loop())
-    prewarm_a_class_task = asyncio.create_task(_prewarm_a_class_loop())
+    initialize_runtime()
+    background_tasks = []
+    if settings.enable_background_services:
+        background_tasks = await start_background_services()
+        _log.info("background services enabled in API process")
+    else:
+        _log.info("background services disabled in API process")
     try:
         yield
     finally:
-        prewarm_task.cancel()
-        prewarm_a_class_task.cancel()
-        await stop_listener()
-        stop_scheduler()
+        if background_tasks:
+            await stop_background_services(background_tasks)
 
 
 app = FastAPI(
@@ -176,12 +93,18 @@ app.include_router(gallery.router)
 app.include_router(a_class_router.router)
 app.include_router(moments_router.router)
 app.include_router(voice.router)
+app.include_router(assistant.router)
 app.include_router(lab_router.router)
 app.include_router(lark_callbacks.router)
 app.include_router(chat_insights.router)
 app.include_router(ai_assistants.router)
 app.include_router(usage_router.router)
 app.include_router(project_report.router)
+app.include_router(public_calendar.router)
+app.include_router(permissions_router.router)
+app.include_router(approval_rules.router)
+app.include_router(stage_templates.router)
+app.include_router(bitable.router)
 
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"

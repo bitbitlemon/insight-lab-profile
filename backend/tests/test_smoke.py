@@ -3,7 +3,7 @@ import asyncio
 import json
 from datetime import date, datetime, time, timedelta
 
-from app.models import AuditLog, CalendarEvent, ClassSchedule, Contribution, Member, Paper, PaperAuthor, PointsLedger, Project, ProjectChatMessage, ProjectChatTopic, ProjectMember, Task
+from app.models import AuditLog, AIChatSubmission, CalendarEvent, ClassSchedule, Contribution, LarkBaseChatMessage, LarkBaseChatSource, LarkDocWatch, Member, Paper, PaperAuthor, PointsLedger, Project, ProjectChat, ProjectChatMessage, ProjectChatTopic, ProjectLog, ProjectMember, Task
 from app.services.auth import create_jwt, decode_jwt, AuthError
 from app.services.points_rules import (
     paper_tier_key, paper_pool, grant_points, ip_points,
@@ -245,6 +245,81 @@ def test_task_receipt_moves_todo_to_in_progress(client, admin_user, db_session, 
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "in_progress"
     assert r.json()["received_at"] is not None
+
+
+def test_lark_receipt_card_updates_task_status(admin_user, db_session):
+    from app.services.focus_card_actions import handle_focus_card_action
+
+    task = Task(
+        title="卡片回执 smoke 任务",
+        status="todo",
+        assignee_open_id=admin_user.open_id,
+        created_by=admin_user.open_id,
+    )
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
+
+    result = handle_focus_card_action({
+        "event": {
+            "operator": {"open_id": admin_user.open_id},
+            "action": {
+                "value": {
+                    "action": "receipt_ack",
+                    "kind": "task",
+                    "target_id": task.task_id,
+                    "detail_url": "https://example.test/board",
+                },
+            },
+        },
+    }, db_session)
+
+    db_session.refresh(task)
+    assert task.status == "in_progress"
+    assert task.received_at is not None
+    assert result["toast"]["content"] == "已收到"
+    assert result["card"]["header"]["title"]["content"] == "任务已收到"
+    assert result["card"]["elements"][-1]["actions"][0]["text"]["content"] == "已收到"
+
+
+def test_lark_receipt_card_updates_project_member(admin_user, db_session):
+    from app.services.focus_card_actions import handle_focus_card_action
+
+    project = Project(
+        name="卡片回执 smoke 项目",
+        owner_open_id=admin_user.open_id,
+        created_by=admin_user.open_id,
+        department=admin_user.department,
+        project_type="team",
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+    member = ProjectMember(project_id=project.project_id, member_open_id=admin_user.open_id, role="member")
+    db_session.add(member)
+    db_session.commit()
+
+    result = handle_focus_card_action({
+        "event": {
+            "operator": {"open_id": admin_user.open_id},
+            "action": {
+                "value": {
+                    "action": "receipt_ack",
+                    "kind": "project",
+                    "target_id": project.project_id,
+                    "project_name": project.name,
+                    "detail_url": "https://example.test/projects?project_id=1",
+                },
+            },
+        },
+    }, db_session)
+
+    member = db_session.get(ProjectMember, (project.project_id, admin_user.open_id))
+    assert member is not None
+    assert member.received_at is not None
+    assert result["toast"]["content"] == "已收到"
+    assert result["card"]["header"]["title"]["content"] == "项目已收到"
+    assert result["card"]["elements"][-1]["actions"][0]["text"]["content"] == "已收到"
 
 
 def test_today_todo_and_chat_thinking_task_flow(client, admin_user):
@@ -961,6 +1036,1053 @@ def test_project_chat_link_and_sync(client, admin_user, db_session, monkeypatch)
     r = client.get(f"/api/projects/{project_id}")
     assert r.status_code == 200, r.text
     assert r.json()["chats"][0]["latest_topic_reply_at"] is not None
+
+
+def test_project_chat_whole_chat_summarize_creates_log_and_tasks(client, admin_user, db_session, monkeypatch):
+    from app.services import lark_chat_sync
+
+    contributor = Member(
+        open_id="chat_contributor_open_id",
+        name="群聊贡献者",
+        role="student",
+        department="测试",
+        status="active",
+        privacy_level="internal",
+    )
+    db_session.add(contributor)
+    db_session.commit()
+
+    r = client.post("/api/projects", json={"name": "整群归档 smoke 项目"})
+    assert r.status_code == 201, r.text
+    project_id = r.json()["project_id"]
+
+    r = client.post(f"/api/projects/{project_id}/chats", json={
+        "chat_id": "oc_whole_chat",
+        "chat_name": "整群测试群",
+    })
+    assert r.status_code == 201, r.text
+    whole_chat_id = r.json()["project_chat_id"]
+    assert r.json()["selected_topic_key"] is None
+
+    r = client.post(f"/api/projects/{project_id}/chats", json={
+        "chat_id": "oc_whole_chat",
+        "chat_name": "整群测试群",
+    })
+    assert r.status_code == 409
+
+    r = client.post(f"/api/projects/{project_id}/chats", json={
+        "chat_id": "oc_whole_chat",
+        "chat_name": "整群测试群",
+        "selected_topic_key": "omt_whole_topic",
+        "selected_topic_title": "同群话题",
+    })
+    assert r.status_code == 201, r.text
+    assert db_session.query(ProjectChat).filter_by(project_id=project_id, chat_id="oc_whole_chat").count() == 2
+
+    def fake_fetch_chat_messages(*args, **kwargs):
+        return {
+            "has_more": False,
+            "messages": [
+                {
+                    "message_id": "om_whole_1",
+                    "thread_id": "omt_whole_topic",
+                    "content": "今天已经完成整群数据源关联，决定保留话题入口。",
+                    "create_time": "2026-06-10 09:00",
+                    "msg_type": "text",
+                    "sender": {"id": admin_user.open_id, "name": admin_user.name, "sender_type": "user"},
+                },
+                {
+                    "message_id": "om_whole_2",
+                    "thread_id": "omt_whole_topic",
+                    "content": "风险是接口超时导致历史项目日志不可用，后续需要补充同步并确认任务。",
+                    "create_time": "2026-06-10 09:10",
+                    "msg_type": "text",
+                    "sender": {"id": contributor.open_id, "name": contributor.name, "sender_type": "user"},
+                },
+                {
+                    "message_id": "om_whole_3",
+                    "thread_id": "omt_whole_topic",
+                    "content": "我已经解决同步问题并完成验证，是否还需要补充贡献分析？",
+                    "create_time": "2026-06-10 09:20",
+                    "msg_type": "text",
+                    "sender": {"id": contributor.open_id, "name": contributor.name, "sender_type": "user"},
+                },
+            ],
+        }
+
+    monkeypatch.setattr(lark_chat_sync, "fetch_chat_messages", fake_fetch_chat_messages, raising=True)
+
+    r = client.post(f"/api/projects/{project_id}/chats/{whole_chat_id}/summarize", json={"page_size": 50, "max_pages": 1})
+    assert r.status_code == 201, r.text
+    log = r.json()
+    assert log["resource_type"] == "diary:chat"
+    assert "整项目记录" in (log["body"] or "") or "整项目数据源" in (log["body"] or "")
+    assert "2026-06-10 09:10 群聊贡献者" not in (log["body"] or "")
+    assert "风险是接口超时导致历史项目日志不可用，后续需要补充同步并确认任务" not in (log["body"] or "")
+    assert "发现接口超时导致历史项目日志不可用" in (log["body"] or "")
+    assert "已解决/已归档事项" in (log["body"] or "")
+    extra = json.loads(log["extra_json"])
+    assert extra["project_chat_id"] == whole_chat_id
+    assert extra["selected_topic_key"] is None
+    assert extra["message_count"] == 3
+    assert contributor.open_id in extra["synced_member_open_ids"]
+    contribution = next(item for item in extra["chat_contribution_stats"] if item["member_open_id"] == contributor.open_id)
+    assert contribution["message_count"] == 2
+    assert contribution["question_count"] >= 1
+    assert contribution["solution_count"] >= 1
+    assert contribution["risk_count"] >= 1
+    assert extra["resolved_items"]
+    assert not extra.get("generated_tasks")
+    project_member = db_session.get(ProjectMember, (project_id, contributor.open_id))
+    assert project_member is not None
+    assert project_member.received_at is not None
+    assert project_member.left_at is None
+
+    monkeypatch.setattr(lark_chat_sync, "fetch_thread_messages", lambda *args, **kwargs: {"has_more": False, "messages": []}, raising=True)
+    r = client.post("/api/projects/chats/backfill-logs", json={"project_ids": [project_id], "skip_existing_logs": True})
+    assert r.status_code == 200, r.text
+    backfill = r.json()
+    assert backfill["total"] == 2
+    assert backfill["summarized"] == 0
+    assert backfill["skipped"] == 2
+    assert backfill["errors"] == 0
+
+
+def test_ai_followup_risk_detection_is_strict_and_titles_are_short(client, admin_user, db_session):
+    from app.services.ai_chat_ingest import create_ai_followup_tasks, split_transcript_summary
+
+    r = client.post("/api/projects", json={"name": "风险严格判断 smoke 项目"})
+    assert r.status_code == 201, r.text
+    project_id = r.json()["project_id"]
+    project = db_session.get(Project, project_id)
+
+    soft_sections = split_transcript_summary("为了避免后续返工，需要补充测试说明。这个问题可以优化。")
+    assert soft_sections["risks"] == []
+
+    log = ProjectLog(
+        project_id=project_id,
+        actor_open_id=admin_user.open_id,
+        kind="note",
+        status="recorded",
+        title="风险严格判断",
+        body="风险严格判断",
+        resource_type="diary:chat",
+    )
+    db_session.add(log)
+    db_session.flush()
+    sections = {
+        "progress": [],
+        "decisions": [],
+        "risks": ["2026-06-10 09:10 张三: 风险是接口超时导致历史项目日志不可用，需要尽快处理并回滚失败任务。"],
+        "actions": [],
+        "knowledge": [],
+    }
+    generated = create_ai_followup_tasks(db_session, project=project, log=log, sections=sections, sender_open_id=admin_user.open_id)
+    assert len(generated) == 1
+    assert generated[0]["kind"] == "risk"
+    assert len(generated[0]["title"]) <= 42
+    assert "2026-06-10" not in generated[0]["title"]
+    assert "超时" in generated[0]["title"] or "不可用" in generated[0]["title"]
+
+    fragment_log = ProjectLog(
+        project_id=project_id,
+        actor_open_id=admin_user.open_id,
+        kind="note",
+        status="recorded",
+        title="聊天片段过滤",
+        body="聊天片段过滤",
+        resource_type="diary:chat",
+    )
+    db_session.add(fragment_log)
+    db_session.flush()
+    fragment_sections = {"progress": [], "decisions": [], "risks": [], "actions": ["2026-06-09 10:35 郭树昌: 登方乔的 2026-06-09 10:35 覃玮琪: 我没…"], "knowledge": []}
+    assert create_ai_followup_tasks(db_session, project=project, log=fragment_log, sections=fragment_sections, sender_open_id=admin_user.open_id) == []
+
+    resolved_sections = {
+        "progress": [],
+        "decisions": [],
+        "risks": ["接口超时导致历史项目日志不可用，已解决同步问题并完成验证。"],
+        "actions": ["后续可以补充贡献分析。"],
+        "knowledge": [],
+    }
+    assert create_ai_followup_tasks(db_session, project=project, log=fragment_log, sections=resolved_sections, sender_open_id=admin_user.open_id) == []
+
+
+def test_project_diary_timeline_and_briefing(client, admin_user):
+    r = client.post("/api/projects", json={"name": "项目日记 smoke 项目"})
+    assert r.status_code == 201, r.text
+    project_id = r.json()["project_id"]
+
+    r = client.post("/api/tasks", json={
+        "title": "项目日记关联任务",
+        "project_id": project_id,
+        "assignee_open_id": admin_user.open_id,
+        "status": "in_progress",
+        "thinking": "先确认客户口径再实现",
+    })
+    assert r.status_code == 201, r.text
+    task_id = r.json()["task_id"]
+
+    r = client.post(f"/api/projects/{project_id}/diary", json={
+        "content": "今天和客户确认首页改版，决定采用新的导航结构。风险是第三方接口超时不可用，明天需要继续联调。",
+        "diary_type": "risk",
+        "task_id": task_id,
+        "needs_confirmation": True,
+        "important": True,
+    })
+    assert r.status_code == 201, r.text
+    diary = r.json()
+    assert diary["resource_type"] == "diary:risk"
+    assert diary["status"] == "pending"
+    assert diary["extra_json"]
+
+    r = client.get(f"/api/projects/{project_id}/timeline")
+    assert r.status_code == 200, r.text
+    timeline = r.json()
+    assert any(item["source_type"] == "diary" and item["diary_type"] == "risk" for item in timeline)
+    assert any(item["source_type"] == "task" and item["task_id"] == task_id for item in timeline)
+    diary_item = next(item for item in timeline if item["source_type"] == "diary")
+    assert diary_item["extracted"]["has_risk"] is True
+    assert diary_item["extracted"]["has_decision"] is True
+    assert diary_item["extracted"]["has_action"] is True
+
+    r = client.get(f"/api/projects/{project_id}/briefing", params={"window_hours": 24})
+    assert r.status_code == 200, r.text
+    briefing = r.json()
+    assert briefing["project_id"] == project_id
+    assert briefing["risks"]
+    assert briefing["decisions"]
+    assert briefing["action_items"]
+
+
+def test_project_log_comment_adds_correction_without_editing_log(client, admin_user, db_session):
+    r = client.post("/api/projects", json={"name": "日志批注 smoke 项目"})
+    assert r.status_code == 201, r.text
+    project_id = r.json()["project_id"]
+
+    r = client.post(f"/api/projects/{project_id}/diary", json={
+        "content": "今天完成初版归档，但阶段识别可能不准确。",
+        "diary_type": "progress",
+    })
+    assert r.status_code == 201, r.text
+    log = r.json()
+    original_body = log["body"]
+
+    r = client.post(f"/api/projects/{project_id}/logs/{log['log_id']}/comments", json={
+        "content": "修正：这条应归到评审/修改节点，不是实现节点。",
+        "comment_type": "correction",
+    })
+    assert r.status_code == 201, r.text
+    comment = r.json()
+    assert comment["log_id"] == log["log_id"]
+    assert comment["author_open_id"] == admin_user.open_id
+
+    unchanged = db_session.get(ProjectLog, log["log_id"])
+    assert unchanged.body == original_body
+
+    r = client.get(f"/api/projects/{project_id}/timeline")
+    assert r.status_code == 200, r.text
+    item = next(entry for entry in r.json() if entry["id"] == f"log:{log['log_id']}")
+    assert item["comments"]
+    assert item["comments"][0]["content"].startswith("修正：")
+
+
+def test_lark_event_callback_archives_ai_chat_submission(client, admin_user, db_session, monkeypatch):
+    from app.routers import lark_callbacks
+    from app.services import ai_chat_ingest
+
+    monkeypatch.setattr(ai_chat_ingest, "refine_ai_chat_with_llm", lambda *args, **kwargs: None, raising=True)
+    sent_messages = []
+    monkeypatch.setattr(
+        lark_callbacks,
+        "send_text",
+        lambda open_id, text, idempotency_key=None: sent_messages.append((open_id, text)) or True,
+        raising=True,
+    )
+
+    project = Project(
+        name="训练系统优化",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        tags="训练,题目打乱",
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+    task = Task(
+        project_id=project.project_id,
+        title="题目打乱 seed 策略",
+        status="in_progress",
+        assignee_open_id=admin_user.open_id,
+        created_by=admin_user.open_id,
+    )
+    db_session.add(task)
+    db_session.commit()
+
+    text = (
+        f"project:{project.project_id}\n"
+        "ChatGPT 对话总结：今天分析训练系统题目打乱逻辑，"
+        "决定把 seed 固定在 session 级别，避免同一轮训练重复。明天需要继续验证。"
+    )
+    r = client.post("/api/lark/event-callback", json={
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": admin_user.open_id}},
+            "message": {
+                "message_id": "om_ai_chat_smoke",
+                "chat_id": "oc_ai_chat_smoke",
+                "chat_type": "p2p",
+                "message_type": "text",
+                "content": json.dumps({"text": text}, ensure_ascii=False),
+            },
+        },
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["matched_project_id"] == project.project_id
+    assert body["confidence"] >= 0.9
+    assert body["applied_log_id"]
+    assert sent_messages
+    assert sent_messages[0][0] == admin_user.open_id
+    assert "已录入项目日志" in sent_messages[0][1]
+    assert "项目: 训练系统优化" in sent_messages[0][1]
+
+    submission = db_session.get(AIChatSubmission, body["submission_id"])
+    assert submission is not None
+    assert submission.source_ai_name == "ChatGPT"
+    assert submission.stage in ("implementation", "integration")
+    assert submission.log_type == "decision"
+    assert submission.matched_task_id == task.task_id
+
+    log = db_session.get(ProjectLog, body["applied_log_id"])
+    assert log is not None
+    assert log.project_id == project.project_id
+    assert log.resource_type == "ai_chat:decision"
+    assert "AI聊天归档" in log.title or "ChatGPT聊天归档" in log.title
+    assert "题目打乱" in (log.body or "")
+    assert "原始记录:" not in (log.body or "")
+    assert "原始聊天记录" not in (log.body or "")
+    assert " | " in (log.body or "").splitlines()[0]
+    assert "进展:" in (log.body or "")
+    assert "决策:" in (log.body or "")
+    assert "风险/问题:" not in (log.body or "")
+    assert "后续动作:" in (log.body or "")
+    assert all(len(line) <= 80 for line in (log.body or "").splitlines())
+
+
+def test_lark_event_callback_ignores_group_message_for_xiaojuan_archival(client, admin_user, db_session, monkeypatch):
+    from app.routers import lark_callbacks
+
+    called = {"ingest": 0, "dm": 0}
+
+    def fake_ingest(*args, **kwargs):
+        called["ingest"] += 1
+        raise AssertionError("group messages must not enter Xiaojuan active archival")
+
+    monkeypatch.setattr(lark_callbacks, "ingest_ai_chat_submission", fake_ingest, raising=True)
+    monkeypatch.setattr(
+        lark_callbacks,
+        "send_text",
+        lambda *args, **kwargs: called.__setitem__("dm", called["dm"] + 1) or True,
+        raising=True,
+    )
+
+    r = client.post("/api/lark/event-callback", json={
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": admin_user.open_id}},
+            "message": {
+                "message_id": "om_group_ai_chat",
+                "chat_id": "oc_group_should_be_silent",
+                "chat_type": "group",
+                "message_type": "text",
+                "content": json.dumps({"text": "project:1 ChatGPT 对话总结：群里这条不应被小卷主动归档。"}, ensure_ascii=False),
+            },
+        },
+    })
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "ignored": "group_message"}
+    assert called == {"ingest": 0, "dm": 0}
+
+
+def test_lark_event_callback_archives_ai_chat_markdown_file(client, admin_user, db_session, monkeypatch):
+    from app.routers import lark_callbacks
+    from app.services import ai_chat_ingest
+
+    monkeypatch.setattr(ai_chat_ingest, "refine_ai_chat_with_llm", lambda *args, **kwargs: None, raising=True)
+    monkeypatch.setattr(lark_callbacks, "send_text", lambda *args, **kwargs: True, raising=True)
+    monkeypatch.setattr(ai_chat_ingest, "send_text", lambda *args, **kwargs: True, raising=True)
+
+    project = Project(
+        name="文档归档助手",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        tags="文档,归档",
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+
+    def fake_download(attachment):
+        assert attachment.file_key == "file_ai_chat_md"
+        assert attachment.file_name == "chatgpt-summary.md"
+        return (
+            f"文件: {attachment.file_name}\n"
+            f"project:{project.project_id}\n"
+            "ChatGPT 对话总结：今天确认文档归档策略，决定保留最新版本并归档旧版本。"
+            "后续需要补充版本说明。"
+        )
+
+    monkeypatch.setattr(lark_callbacks, "download_lark_text_file", fake_download, raising=True)
+
+    r = client.post("/api/lark/event-callback", json={
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": admin_user.open_id}},
+            "message": {
+                "message_id": "om_ai_chat_file_smoke",
+                "chat_id": "oc_ai_chat_file_smoke",
+                "chat_type": "p2p",
+                "message_type": "file",
+                "content": json.dumps({
+                    "file_key": "file_ai_chat_md",
+                    "file_name": "chatgpt-summary.md",
+                }, ensure_ascii=False),
+            },
+        },
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["matched_project_id"] == project.project_id
+    assert body["applied_log_id"]
+
+    submission = db_session.get(AIChatSubmission, body["submission_id"])
+    assert submission is not None
+    assert submission.message_id == "om_ai_chat_file_smoke"
+    assert "chatgpt-summary.md" in submission.raw_text
+
+    log = db_session.get(ProjectLog, body["applied_log_id"])
+    assert log is not None
+    assert log.resource_type == "ai_chat:decision"
+    assert "决策:" in (log.body or "")
+    assert "后续动作:" in (log.body or "")
+    assert "原始记录:" not in (log.body or "")
+    assert "原始聊天记录" not in (log.body or "")
+    assert all(len(line) <= 80 for line in (log.body or "").splitlines())
+
+
+def test_lark_event_callback_uses_llm_refined_project_match(client, admin_user, db_session, monkeypatch):
+    from app.routers import lark_callbacks
+    from app.services import ai_chat_ingest
+
+    monkeypatch.setattr(lark_callbacks, "send_text", lambda *args, **kwargs: True, raising=True)
+
+    wrong_project = Project(
+        name="文档归档助手",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        tags="文档",
+        created_by=admin_user.open_id,
+    )
+    target_project = Project(
+        name="智能体安全评测",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        tags="安全,评测",
+        created_by=admin_user.open_id,
+    )
+    db_session.add_all([wrong_project, target_project])
+    db_session.commit()
+    db_session.refresh(target_project)
+    task = Task(
+        project_id=target_project.project_id,
+        title="红队测试样本整理",
+        status="in_progress",
+        assignee_open_id=admin_user.open_id,
+        created_by=admin_user.open_id,
+    )
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
+
+    def fake_refine(db, text, rule_match, source_ai_name):
+        return ai_chat_ingest.RefinedAiChat(
+            project_id=target_project.project_id,
+            task_id=task.task_id,
+            confidence=0.91,
+            stage="review",
+            log_type="decision",
+            summary="确认红队样本整理口径",
+            sections={
+                "progress": ["完成安全评测样本梳理"],
+                "decisions": ["统一红队测试样本口径"],
+                "risks": [],
+                "actions": ["补充缺失样本说明"],
+                "knowledge": [],
+            },
+            reasoning="内容指向安全评测",
+        )
+
+    monkeypatch.setattr(ai_chat_ingest, "refine_ai_chat_with_llm", fake_refine, raising=True)
+
+    r = client.post("/api/lark/event-callback", json={
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": admin_user.open_id}},
+            "message": {
+                "message_id": "om_ai_chat_llm_project",
+                "chat_id": "oc_ai_chat_llm_project",
+                "chat_type": "p2p",
+                "message_type": "text",
+                "content": json.dumps({
+                    "text": "ChatGPT 对话总结：今天整理红队测试样本，决定统一安全评测口径，后续补充缺失样本说明。"
+                }, ensure_ascii=False),
+            },
+        },
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["matched_project_id"] == target_project.project_id
+    assert body["confidence"] == 0.91
+    submission = db_session.get(AIChatSubmission, body["submission_id"])
+    assert submission is not None
+    assert submission.matched_task_id == task.task_id
+    assert submission.stage == "review"
+    assert submission.log_type == "decision"
+    log = db_session.get(ProjectLog, body["applied_log_id"])
+    assert log is not None
+    assert "统一红队测试样本口径" in (log.body or "")
+    extra = json.loads(log.extra_json or "{}")
+    assert extra["llm_refined"] is True
+    assert extra["llm_reasoning"] == "内容指向安全评测"
+
+
+def test_lark_doc_link_archives_and_watches_updates(client, admin_user, db_session, monkeypatch):
+    from app.routers import lark_callbacks
+    from app.services import ai_chat_ingest
+
+    monkeypatch.setattr(ai_chat_ingest, "refine_ai_chat_with_llm", lambda *args, **kwargs: None, raising=True)
+    monkeypatch.setattr(lark_callbacks, "send_text", lambda *args, **kwargs: True, raising=True)
+    monkeypatch.setattr(ai_chat_ingest, "send_text", lambda *args, **kwargs: True, raising=True)
+
+    project = Project(
+        name="云文档归档项目",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        tags="云文档,归档",
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+
+    doc_url = "https://example.feishu.cn/docx/doccnAiChatWatch"
+    doc_versions = [
+        f"云文档: {doc_url}\nproject:{project.project_id}\nChatGPT 对话总结：今天完成云文档归档方案，决定后续自动监听更新。",
+        f"云文档: {doc_url}\nproject:{project.project_id}\nChatGPT 对话总结：今天补充云文档归档方案，后续需要完善异常提示。",
+    ]
+    state = {"index": 0}
+
+    def fake_fetch(url):
+        assert url == doc_url
+        return doc_versions[state["index"]]
+
+    monkeypatch.setattr(lark_callbacks, "fetch_lark_doc_text", fake_fetch, raising=True)
+    monkeypatch.setattr(ai_chat_ingest, "fetch_lark_doc_text", fake_fetch, raising=True)
+
+    r = client.post("/api/lark/event-callback", json={
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": admin_user.open_id}},
+            "message": {
+                "message_id": "om_ai_chat_doc_watch",
+                "chat_id": "oc_ai_chat_doc_watch",
+                "chat_type": "p2p",
+                "message_type": "text",
+                "content": json.dumps({"text": f"请归档这个云文档 {doc_url}"}, ensure_ascii=False),
+            },
+        },
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["matched_project_id"] == project.project_id
+
+    watch = db_session.query(LarkDocWatch).filter_by(doc_url=doc_url).one()
+    assert watch.matched_project_id == project.project_id
+    first_submission_id = watch.last_submission_id
+    before_count = db_session.query(AIChatSubmission).count()
+
+    unchanged = ai_chat_ingest.sync_lark_doc_watches(db_session, limit=5)
+    assert unchanged["updated"] == 0
+    assert db_session.query(AIChatSubmission).count() == before_count
+
+    state["index"] = 1
+    changed = ai_chat_ingest.sync_lark_doc_watches(db_session, limit=5)
+    assert changed["updated"] == 1
+    assert db_session.query(AIChatSubmission).count() == before_count + 1
+    latest_watch = db_session.query(LarkDocWatch).filter_by(doc_url=doc_url).one()
+    assert latest_watch.last_submission_id != first_submission_id
+    latest_submission = db_session.get(AIChatSubmission, latest_watch.last_submission_id)
+    assert latest_submission is not None
+    assert "增量更新:" in latest_submission.raw_text
+    assert "今天补充云文档归档方案" in latest_submission.raw_text
+    assert "今天完成云文档归档方案" not in latest_submission.raw_text
+
+
+def test_build_incremental_doc_submission_appends_only_new_tail():
+    from app.services import ai_chat_ingest
+
+    previous = "\n".join([
+        "云文档: https://example.feishu.cn/docx/doc1",
+        "project:12",
+        "06月09日 完成第一轮整理。",
+    ])
+    current = "\n".join([
+        "云文档: https://example.feishu.cn/docx/doc1",
+        "project:12",
+        "06月09日 完成第一轮整理。",
+        "06月10日 进入联调阶段，耗时2天。",
+    ])
+
+    delta = ai_chat_ingest.build_incremental_doc_submission(
+        previous_text=previous,
+        current_text=current,
+        project_id=12,
+    )
+
+    assert delta is not None
+    assert "增量更新:" in delta
+    assert "06月10日 进入联调阶段，耗时2天。" in delta
+    assert "06月09日 完成第一轮整理。" not in delta
+
+
+def test_extract_record_includes_time_duration_and_stage_markers(db_session):
+    from app.services import ai_chat_ingest
+
+    text = "\n".join([
+        "06月10日 09:30 开始联调，06月12日 18:00 完成。",
+        "本次耗时2天，当前进入交付阶段。",
+    ])
+
+    record = ai_chat_ingest.extract_record(text, [])
+
+    assert "06月10日 09:30" in record["time_points"]
+    assert record["duration_hint"] == "2天"
+    assert any("交付阶段" in item for item in record["stage_markers"])
+
+
+def test_parse_lark_base_url_and_detect_field_map():
+    from app.services import lark_base_chat_sync
+
+    parsed = lark_base_chat_sync.parse_lark_base_url(
+        "https://insight-lab.feishu.cn/base/L7hwbIV3gaFoB7sJYDtcxM5Tnmg?table=tbli5tObEB0twhvg&view=vewZ62k7Yr"
+    )
+    assert parsed["base_token"] == "L7hwbIV3gaFoB7sJYDtcxM5Tnmg"
+    assert parsed["table_id"] == "tbli5tObEB0twhvg"
+    assert parsed["view_id"] == "vewZ62k7Yr"
+
+    field_map = lark_base_chat_sync.detect_field_map([
+        {"name": "消息id"},
+        {"name": "发送人员"},
+        {"name": "发送人"},
+        {"name": "消息内容"},
+        {"name": "消息详细信息"},
+        {"name": "对应群聊名称"},
+        {"name": "群id"},
+        {"name": "发送时间（具体）"},
+    ])
+    assert field_map["record_message_id"] == "消息id"
+    assert field_map["sender_name"] == "发送人员"
+    assert field_map["sender_open_id"] == "发送人"
+    assert field_map["content"] == "消息内容"
+    assert field_map["chat_name"] == "对应群聊名称"
+
+
+def test_analyze_lark_base_chat_source_archives_only_high_confidence(db_session, admin_user, monkeypatch):
+    from app.services import lark_base_chat_sync
+    from app.services.ai_chat_ingest import RefinedAiChat, ProjectMatch
+
+    project = Project(
+        name="基地项目A",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        tags="基地,申报",
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+
+    source = LarkBaseChatSource(
+        name="群聊Base",
+        base_token="base_x",
+        table_id="tbl_x",
+        base_url="https://example.feishu.cn/base/base_x?table=tbl_x",
+        field_map_json=json.dumps({"content": "消息内容"}, ensure_ascii=False),
+        status="active",
+        created_by=admin_user.open_id,
+    )
+    db_session.add(source)
+    db_session.commit()
+    db_session.refresh(source)
+
+    db_session.add_all([
+        LarkBaseChatMessage(
+            source_id=source.source_id,
+            record_id="rec1",
+            message_id="om1",
+            chat_id="oc1",
+            chat_name="基地项目群",
+            sender_open_id=admin_user.open_id,
+            sender_name=admin_user.name,
+            content="今天确认申报书进入评审阶段，后续补材料。",
+            full_text="今天确认申报书进入评审阶段，后续补材料。",
+            raw_json="{}",
+            import_status="new",
+            message_created_at=datetime(2026, 6, 9, 9, 30),
+        ),
+        LarkBaseChatMessage(
+            source_id=source.source_id,
+            record_id="rec2",
+            message_id="om2",
+            chat_id="oc1",
+            chat_name="基地项目群",
+            sender_open_id=admin_user.open_id,
+            sender_name=admin_user.name,
+            content="补充了里程碑与时间节点说明。",
+            full_text="补充了里程碑与时间节点说明。",
+            raw_json="{}",
+            import_status="new",
+            message_created_at=datetime(2026, 6, 9, 10, 0),
+        ),
+    ])
+    db_session.commit()
+
+    monkeypatch.setattr(
+        lark_base_chat_sync,
+        "match_project",
+        lambda db, text, sender_open_id=None: ProjectMatch(project=project, task=None, confidence=0.62, reasons=["sender_project"]),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        lark_base_chat_sync,
+        "refine_ai_chat_with_llm",
+        lambda db, text, rule_match, source_ai_name, sender_open_id=None: RefinedAiChat(
+            project_id=project.project_id,
+            task_id=None,
+            confidence=0.93,
+            stage="review",
+            log_type="progress",
+            summary="完成申报书评审材料补充",
+            sections={"progress": ["完成申报书评审材料补充"], "decisions": [], "risks": [], "actions": ["后续补材料"], "knowledge": []},
+            reasoning="内容高度指向申报项目",
+        ),
+        raising=True,
+    )
+
+    archived = lark_base_chat_sync.analyze_lark_base_chat_source(db_session, source)
+    db_session.commit()
+
+    assert archived == 1
+    log_row = db_session.query(ProjectLog).filter(ProjectLog.project_id == project.project_id).order_by(ProjectLog.log_id.desc()).first()
+    assert log_row is not None
+    assert "完成申报书评审材料补充" in (log_row.body or "")
+    rows = db_session.query(LarkBaseChatMessage).filter_by(source_id=source.source_id).all()
+    assert all(row.import_status == "archived" for row in rows)
+    assert all(row.archived_log_id == log_row.log_id for row in rows)
+
+
+def test_fetch_lark_doc_text_prefers_markdown_and_cleans_noise(monkeypatch):
+    from app.services import ai_chat_ingest
+
+    payload = {
+        "ok": True,
+        "data": {
+            "title": "项目日志",
+            "markdown": """
+项目 Alpha 周报
+
+project:12
+今天确认训练方案进入联调阶段。
+
+<details>
+本地运行记录
+previous messages
+Ran *command*
+</details>
+
+后续需要补充接口验证。
+""",
+        },
+    }
+
+    class Completed:
+        returncode = 0
+        stdout = json.dumps(payload, ensure_ascii=False)
+        stderr = ""
+
+    monkeypatch.setattr(ai_chat_ingest.subprocess, "run", lambda *args, **kwargs: Completed(), raising=True)
+
+    text = ai_chat_ingest.fetch_lark_doc_text("https://example.feishu.cn/wiki/doc-test")
+    assert text.startswith("云文档: https://example.feishu.cn/wiki/doc-test\n")
+    assert "项目日志" in text
+    assert "项目 Alpha 周报" in text
+    assert "project:12" in text
+    assert "今天确认训练方案进入联调阶段。" in text
+    assert "后续需要补充接口验证。" in text
+    assert "previous messages" not in text
+    assert "Ran *command*" not in text
+
+
+def test_project_timeline_and_briefing_handle_due_dates_and_return_data(client, admin_user, db_session):
+    project = Project(
+        name="时间线 smoke 项目",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+
+    task = Task(
+        project_id=project.project_id,
+        title="带截止时间的任务",
+        status="in_progress",
+        assignee_open_id=admin_user.open_id,
+        created_by=admin_user.open_id,
+        due_date=datetime(2026, 6, 20, 9, 30),
+        progress_draft="已完成接口联调准备",
+    )
+    log_row = ProjectLog(
+        project_id=project.project_id,
+        actor_open_id=admin_user.open_id,
+        kind="note",
+        status="recorded",
+        title="联调推进记录",
+        body="今天确认进入联调阶段。",
+        extra_json=json.dumps({"diary_type": "progress", "task_id": None, "extracted": {"has_action": True}}, ensure_ascii=False),
+    )
+    db_session.add_all([task, log_row])
+    db_session.commit()
+
+    timeline_resp = client.get(f"/api/projects/{project.project_id}/timeline")
+    assert timeline_resp.status_code == 200, timeline_resp.text
+    timeline_items = timeline_resp.json()
+    assert any("截止: 2026-06-20" in (item.get("body") or "") for item in timeline_items)
+
+    briefing_resp = client.get(f"/api/projects/{project.project_id}/briefing")
+    assert briefing_resp.status_code == 200, briefing_resp.text
+    briefing = briefing_resp.json()
+    assert briefing["project_id"] == project.project_id
+    assert "summary_lines" in briefing
+
+
+def test_review_pending_lark_base_chat_batch_archives_to_selected_project(client, admin_user, db_session, monkeypatch):
+    from app.services import lark_base_chat_sync
+    from app.services.ai_chat_ingest import RefinedAiChat
+
+    project = Project(
+        name="人工复核归档项目",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+
+    source = LarkBaseChatSource(
+        name="待复核群聊源",
+        base_token="base_review",
+        table_id="tbl_review",
+        base_url="https://example.feishu.cn/base/base_review?table=tbl_review",
+        status="active",
+        created_by=admin_user.open_id,
+    )
+    db_session.add(source)
+    db_session.commit()
+    db_session.refresh(source)
+
+    db_session.add_all([
+        LarkBaseChatMessage(
+            source_id=source.source_id,
+            record_id="pending_1",
+            message_id="om_pending_1",
+            chat_id="oc_pending",
+            chat_name="待复核项目群",
+            sender_open_id=admin_user.open_id,
+            sender_name=admin_user.name,
+            content="今天确认项目进入实现阶段，准备联调。",
+            full_text="今天确认项目进入实现阶段，准备联调。",
+            raw_json="{}",
+            import_status="pending_project",
+            message_created_at=datetime(2026, 6, 9, 10, 0),
+        ),
+        LarkBaseChatMessage(
+            source_id=source.source_id,
+            record_id="pending_2",
+            message_id="om_pending_2",
+            chat_id="oc_pending",
+            chat_name="待复核项目群",
+            sender_open_id=admin_user.open_id,
+            sender_name=admin_user.name,
+            content="后续补充测试结果并整理文档。",
+            full_text="后续补充测试结果并整理文档。",
+            raw_json="{}",
+            import_status="pending_project",
+            message_created_at=datetime(2026, 6, 9, 10, 30),
+        ),
+    ])
+    db_session.commit()
+
+    monkeypatch.setattr(
+        lark_base_chat_sync,
+        "refine_ai_chat_with_llm",
+        lambda db, text, rule_match, source_ai_name, sender_open_id=None: RefinedAiChat(
+            project_id=project.project_id,
+            task_id=None,
+            confidence=0.97,
+            stage="implementation",
+            log_type="progress",
+            summary="确认进入实现并准备联调",
+            sections={"progress": ["确认进入实现阶段"], "decisions": [], "risks": [], "actions": ["补充测试结果"], "knowledge": []},
+            reasoning="人工确认项目后精炼",
+        ),
+        raising=True,
+    )
+
+    pending_resp = client.get(f"/api/projects/chat-sources/{source.source_id}/pending-batches")
+    assert pending_resp.status_code == 200, pending_resp.text
+    batches = pending_resp.json()
+    assert len(batches) == 1
+    group_key = batches[0]["group_key"]
+
+    review_resp = client.post(
+        f"/api/projects/chat-sources/{source.source_id}/pending-batches/review",
+        json={"group_key": group_key, "action": "archive", "project_id": project.project_id},
+    )
+    assert review_resp.status_code == 200, review_resp.text
+    assert review_resp.json()["ok"] is True
+
+    rows = db_session.query(LarkBaseChatMessage).filter_by(source_id=source.source_id).all()
+    assert all(row.import_status == "archived" for row in rows)
+    archived_log = db_session.query(ProjectLog).filter_by(project_id=project.project_id).order_by(ProjectLog.log_id.desc()).first()
+    assert archived_log is not None
+    assert "确认进入实现阶段" in archived_log.body
+    assert "补充测试结果" in archived_log.body
+
+
+def test_match_project_prefers_sender_owned_or_joined_projects(db_session, admin_user):
+    from app.services import ai_chat_ingest
+
+    project = Project(
+        name="基金申报材料整理",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        tags="申报,材料,文档",
+        description="负责基金申报书、附件和版本整理。",
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+
+    vague_text = "今天把申请书旧版本归档，并继续修改正文措辞，补充附件说明。"
+    without_sender = ai_chat_ingest.match_project(db_session, vague_text)
+    with_sender = ai_chat_ingest.match_project(db_session, vague_text, sender_open_id=admin_user.open_id)
+
+    assert without_sender.project is None
+    assert with_sender.project is not None
+    assert with_sender.project.owner_open_id == admin_user.open_id
+    assert "sender_project" in with_sender.reasons
+
+
+def test_build_llm_transcript_keeps_head_tail_and_signal_lines():
+    from app.services import ai_chat_ingest
+
+    text = "\n".join([
+        "开头说明" * 600,
+        "项目：基金申报材料整理，今天确认正文修改方向。",
+        "中间普通内容" * 400,
+        "决定：附件说明按新版模板统一。",
+        "结尾补充" * 500,
+    ])
+
+    payload = ai_chat_ingest._build_llm_transcript(text)
+    assert "开头说明" in payload["head"]
+    assert "结尾补充" in payload["tail"]
+    assert any("基金申报材料整理" in line for line in payload["signals"])
+    assert any("附件说明" in line for line in payload["signals"])
+
+
+def test_delete_project_log_detaches_ai_submission(client, admin_user, db_session):
+    project = Project(
+        name="日志删除测试项目",
+        status="active",
+        project_type="team",
+        owner_open_id=admin_user.open_id,
+        department=admin_user.department,
+        created_by=admin_user.open_id,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+
+    log = ProjectLog(
+        project_id=project.project_id,
+        actor_open_id=admin_user.open_id,
+        kind="note",
+        status="recorded",
+        title="测试日志",
+        body="这是一条待删除的项目日志。",
+    )
+    db_session.add(log)
+    db_session.commit()
+    db_session.refresh(log)
+    log_id = log.log_id
+
+    submission = AIChatSubmission(
+        sender_open_id=admin_user.open_id,
+        raw_text="ChatGPT 对话总结：测试删除日志后的解绑。",
+        matched_project_id=project.project_id,
+        confidence=0.88,
+        status="applied",
+        applied_log_id=log_id,
+    )
+    db_session.add(submission)
+    db_session.commit()
+    db_session.refresh(submission)
+
+    r = client.delete(f"/api/projects/{project.project_id}/logs/{log_id}")
+    assert r.status_code == 204, r.text
+    db_session.expire_all()
+    assert db_session.get(ProjectLog, log_id) is None
+
+    updated_submission = db_session.get(AIChatSubmission, submission.submission_id)
+    assert updated_submission is not None
+    assert updated_submission.applied_log_id is None
+    assert updated_submission.status == "detached"
 
 
 def test_developer_can_view_all_projects_and_project_tasks(client, db_session):

@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, Selector, Toast } from "antd-mobile";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { createAIAssistant, listAIAssistants, updateAIAssistant, type AIAssistantConfig, type AIAssistantScope, type AIAssistantCadence } from "../api/aiAssistants";
 import {
   listCalendarEvents,
   listLarkUserStatuses,
@@ -9,7 +8,6 @@ import {
   type LarkUserStatus,
 } from "../api/calendar";
 import {
-  createContribution,
   createContributionComment,
   listContributionComments,
   listContributions,
@@ -40,10 +38,8 @@ import {
   deleteTask,
   getTaskFocusSummary,
   heartbeatTaskFocus,
-  listTodayTasks,
   listTaskAuditLogs,
   listTasks,
-  markTaskTodayTodo,
   startTaskFocus,
   stopTaskFocus,
   updateTask,
@@ -70,18 +66,65 @@ import type {
   TaskStatus,
 } from "../types/api";
 
-type ProjectTabKey = "active" | "completed" | "archived";
-type WorkMode = "projects" | "tasks" | "today";
+type ProjectTabKey = "planning" | "active" | "completed" | "archived";
+type WorkMode = "projects" | "tasks";
+type ProjectViewKey = "table" | "kanban" | "gantt";
 type TaskFilter = "open" | "todo" | "in_progress" | "blocked" | "done" | "cancelled" | "all";
+type PaperApprovalStepStatus = "done" | "current" | "waiting";
+type GuidanceStatus = "pending" | "viewed" | "replied" | "resolved";
+
+interface PaperGuidanceRecord {
+  id: string;
+  problemType: string;
+  evidence: string[];
+  target: string;
+  deadline: string;
+  status: GuidanceStatus;
+  suggestion: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+interface PaperApprovalStep {
+  title: string;
+  group: string;
+  owner: string;
+  status: PaperApprovalStepStatus;
+  note: string;
+  executor?: string;
+  approver?: string;
+  startedAt?: string;
+  completedAt?: string;
+  materials?: string[];
+  guidance?: PaperGuidanceRecord[];
+}
+
+interface PaperApprovalSnapshot {
+  projectId: number;
+  title: string;
+  paperTitle: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  currentNode: string;
+  currentApprover: string;
+  applicant: string;
+  department: string;
+  guide: string;
+  submitted: boolean;
+  documentUrl: string;
+  summary: string;
+  formItems: Array<{ label: string; value: string }>;
+  stages: Array<{ title: string; items: string[] }>;
+  steps: PaperApprovalStep[];
+}
 
 const equalAccessOpenIds = new Set(["ou_20fec537961e0a66669370b00d0fc52d", "ou_c544c4877658cfa1df6cee41939b99c4"]);
 
 const projectStatusStyle: Record<ProjectStatus, { label: string; bg: string; fg: string }> = {
-  planning: { label: "规划中", bg: "#E8F3FF", fg: "#1D4ED8" },
+  planning: { label: "筹备中", bg: "#E8F3FF", fg: "#1D4ED8" },
   active: { label: "进行中", bg: "#E8FFEA", fg: "#15803D" },
-  paused: { label: "已暂停", bg: "#FFF7E6", fg: "#B45309" },
+  paused: { label: "进行中", bg: "#E8FFEA", fg: "#15803D" },
   completed: { label: "已完成", bg: "#F0FDF4", fg: "#15803D" },
-  archived: { label: "已存档", bg: "#F4F3FF", fg: "#5B21B6" },
+  archived: { label: "已归档", bg: "#F4F3FF", fg: "#5B21B6" },
 };
 
 const priorityStyle: Record<ProjectPriority, { label: string; bg: string; fg: string }> = {
@@ -99,45 +142,169 @@ const taskStatusStyle: Record<TaskStatus, { label: string; bg: string; fg: strin
   cancelled: { label: "已取消", bg: "#F7F8FA", fg: "#8F959E" },
 };
 
+const guidanceStatusStyle: Record<GuidanceStatus, { label: string; bg: string; fg: string }> = {
+  pending: { label: "待确认", bg: "#FFF7E6", fg: "#B45309" },
+  viewed: { label: "已查看", bg: "#E8F3FF", fg: "#1D4ED8" },
+  replied: { label: "已反馈", bg: "#F4F3FF", fg: "#5B21B6" },
+  resolved: { label: "已解决", bg: "#E8FFEA", fg: "#15803D" },
+};
+
+const guidanceProblemTypes = ["进度滞后", "材料质量不足", "方向偏差", "协作不清", "执行记录缺失"];
+const guidanceEvidenceOptions = ["日报", "项目群聊", "审批材料", "会议记录"];
+
 const projectTypeStyle: Record<ProjectType, { label: string; bg: string; fg: string }> = {
   team: { label: "团队项目", bg: "#E8F7FF", fg: "#075985" },
   personal: { label: "个人项目", bg: "#F2F3F5", fg: "#4E5969" },
 };
 
-const projectCategoryValues = ["开发", "科研", "竞赛", "培训"] as const;
+const projectCategoryValues = ["论文写作", "产品研发", "项目申报", "竞赛筹备"] as const;
 type ProjectCategory = (typeof projectCategoryValues)[number];
 type ProjectCategoryFilter = "all" | ProjectCategory;
 type WorkflowTemplateKey = ProjectCategory | "自定义";
+type ProjectStageTemplate = {
+  group: string;
+  title: string;
+  hours: number;
+  review: string;
+  materials: readonly string[];
+  note: string;
+  nodes: string[];
+};
+
+const sevenFlowNodes = [
+  {
+    group: "启动",
+    title: "启动阶段",
+    hours: 2,
+    review: "确认项目方向、参考材料、指导关系和团队配置",
+    materials: ["参考材料", "选题说明", "团队确认"],
+    note: "完成启动信息收集，明确项目是否具备进入设计的条件。",
+  },
+  {
+    group: "设计",
+    title: "设计阶段",
+    hours: 3,
+    review: "完成技术、方法、结构或方案设计",
+    materials: ["设计方案", "结构说明", "排期计划"],
+    note: "把启动阶段的方向拆成可执行方案。",
+  },
+  {
+    group: "验证",
+    title: "验证阶段",
+    hours: 8,
+    review: "通过可行性、实验、demo 或 MVP 验证核心假设",
+    materials: ["验证记录", "实验结果", "问题清单"],
+    note: "先验证项目核心路径是否可行，再进入完整产出。",
+  },
+  {
+    group: "内测",
+    title: "内测阶段",
+    hours: 4,
+    review: "形成初稿、内测版本或内部评审材料",
+    materials: ["初版成果", "内测记录", "评审意见"],
+    note: "把验证后的方案做成可评审、可试用、可修改的初版成果。",
+  },
+  {
+    group: "迭代",
+    title: "迭代阶段",
+    hours: 2,
+    review: "根据评审、实验、内测反馈做修订优化",
+    materials: ["修改记录", "优化版本", "补充材料"],
+    note: "围绕内测反馈和关键问题做集中迭代。",
+  },
+  {
+    group: "交付",
+    title: "交付阶段",
+    hours: 2,
+    review: "完成正式提交、上线、投稿或交付",
+    materials: ["最终成果", "提交凭证", "验收记录"],
+    note: "把最终成果提交到对应渠道，并保留凭证。",
+  },
+  {
+    group: "归档",
+    title: "归档阶段",
+    hours: 2,
+    review: "沉淀文档、模板、经验和可复用资产",
+    materials: ["归档材料", "复盘记录", "模板沉淀"],
+    note: "统一收拢成果和经验，方便复用。",
+  },
+] as const;
+
+const categoryFlowNote: Record<ProjectCategory, string> = {
+  论文写作: "来源：类型化节点体系中的「论文写作」。",
+  产品研发: "来源：类型化节点体系中的「产品研发」。",
+  项目申报: "来源：类型化节点体系中的「项目申报」。",
+  竞赛筹备: "来源：类型化节点体系中的「竞赛筹备」。",
+};
+
+const categoryStageNodes: Record<ProjectCategory, string[][]> = {
+  论文写作: [
+    ["找参考", "找选题", "找指导", "找队友"],
+    ["方法创新设计", "模型结构设计"],
+    ["baseline实验验证"],
+    ["论文初稿", "实验补充"],
+    ["论文修改", "补实验"],
+    ["投稿论文"],
+    ["代码+实验复现包"],
+  ],
+  产品研发: [
+    ["需求分析", "PRD初稿"],
+    ["系统架构设计", "UI设计"],
+    ["MVP/demo验证"],
+    ["内测版本", "bug记录"],
+    ["功能优化", "版本迭代"],
+    ["正式上线版本"],
+    ["技术文档", "知识沉淀"],
+  ],
+  项目申报: [
+    ["找参考", "找选题", "找指导", "找队友"],
+    ["技术路线设计", "申报书结构设计"],
+    ["可行性分析验证"],
+    ["申报书初稿", "内部修改评审"],
+    ["申报书修订优化"],
+    ["正式提交申报材料"],
+    ["经验总结", "模板沉淀"],
+  ],
+  竞赛筹备: [
+    ["赛题分析", "立项+报名", "找队友"],
+    ["竞赛方案设计"],
+    ["demo验证"],
+    ["作品初稿", "PPT制作"],
+    ["冲刺优化"],
+    ["最终提交材料"],
+    ["竞赛复盘"],
+  ],
+};
+
+const categoryStageTemplates: Record<ProjectCategory, ProjectStageTemplate[]> = {
+  论文写作: sevenFlowNodes.map((stage, index) => ({ ...stage, nodes: categoryStageNodes.论文写作[index] })),
+  产品研发: sevenFlowNodes.map((stage, index) => ({ ...stage, nodes: categoryStageNodes.产品研发[index] })),
+  项目申报: sevenFlowNodes.map((stage, index) => ({ ...stage, nodes: categoryStageNodes.项目申报[index] })),
+  竞赛筹备: sevenFlowNodes.map((stage, index) => ({ ...stage, nodes: categoryStageNodes.竞赛筹备[index] })),
+};
 
 const workflowTemplates: Record<ProjectCategory, Array<{ title: string; hours: number; review: string }>> = {
-  开发: [
-    { title: "需求确认与边界定义", hours: 2, review: "负责人确认目标、范围和验收口径" },
-    { title: "方案/原型设计", hours: 3, review: "负责人审核实现路径和关键风险" },
-    { title: "开发实现", hours: 8, review: "按模块推进并记录关键决策" },
-    { title: "联调与自测", hours: 4, review: "验证主流程、边界和异常场景" },
-    { title: "验收上线与复盘沉淀", hours: 2, review: "形成知识文档和后续优化项" },
-  ],
-  科研: [
-    { title: "问题定义与文献梳理", hours: 4, review: "负责人确认研究问题和参考范围" },
-    { title: "实验方案设计", hours: 4, review: "审核变量、数据和评价指标" },
-    { title: "实验执行与记录", hours: 8, review: "保留过程数据和失败样本" },
-    { title: "结果分析与讨论", hours: 4, review: "确认结论是否支撑目标" },
-    { title: "论文/报告整理", hours: 4, review: "沉淀可复用方法和材料" },
-  ],
-  竞赛: [
-    { title: "赛题解读与规则确认", hours: 2, review: "确认评分标准和提交限制" },
-    { title: "方案分工与时间排期", hours: 2, review: "明确负责人、里程碑和风险点" },
-    { title: "核心实现/训练", hours: 8, review: "记录参数、方案和版本差异" },
-    { title: "验证优化与材料准备", hours: 4, review: "按评分标准做针对性提升" },
-    { title: "提交复盘与知识沉淀", hours: 2, review: "总结可复用流程和坑点" },
-  ],
-  培训: [
-    { title: "培训目标与对象确认", hours: 1, review: "确认受众、能力目标和交付形式" },
-    { title: "课程/材料设计", hours: 3, review: "负责人审核结构和案例" },
-    { title: "内容制作与演练", hours: 4, review: "检查节奏、演示和互动环节" },
-    { title: "培训执行与反馈收集", hours: 2, review: "记录参与情况和问题" },
-    { title: "复盘改进与知识沉淀", hours: 2, review: "沉淀讲义、FAQ 和改进计划" },
-  ],
+  产品研发: categoryStageTemplates.产品研发.map((stage) => ({ title: stage.title, hours: stage.hours, review: `${stage.review}：${stage.nodes.join("、")}` })),
+  论文写作: categoryStageTemplates.论文写作.map((stage) => ({ title: stage.title, hours: stage.hours, review: `${stage.review}：${stage.nodes.join("、")}` })),
+  竞赛筹备: categoryStageTemplates.竞赛筹备.map((stage) => ({ title: stage.title, hours: stage.hours, review: `${stage.review}：${stage.nodes.join("、")}` })),
+  项目申报: categoryStageTemplates.项目申报.map((stage) => ({ title: stage.title, hours: stage.hours, review: `${stage.review}：${stage.nodes.join("、")}` })),
+};
+
+const standardApprovalTemplates: Record<ProjectCategory, Array<Omit<PaperApprovalStep, "status" | "startedAt" | "completedAt">>> = {
+  论文写作: categoryStageTemplates.论文写作.map((stage) => ({ ...stage, materials: [...stage.materials, ...stage.nodes], owner: "项目负责人", executor: "负责人", approver: "指导人", note: `${stage.note}节点：${stage.nodes.join("、")}。${categoryFlowNote.论文写作}` })),
+  产品研发: categoryStageTemplates.产品研发.map((stage) => ({ ...stage, materials: [...stage.materials, ...stage.nodes], owner: "项目负责人", executor: "负责人", approver: "技术负责人", note: `${stage.note}节点：${stage.nodes.join("、")}。${categoryFlowNote.产品研发}` })),
+  竞赛筹备: categoryStageTemplates.竞赛筹备.map((stage) => ({ ...stage, materials: [...stage.materials, ...stage.nodes], owner: "队长/项目负责人", executor: "参与人", approver: "指导老师", note: `${stage.note}节点：${stage.nodes.join("、")}。${categoryFlowNote.竞赛筹备}` })),
+  项目申报: categoryStageTemplates.项目申报.map((stage) => ({ ...stage, materials: [...stage.materials, ...stage.nodes], owner: "项目负责人", executor: "负责人", approver: "管理者", note: `${stage.note}节点：${stage.nodes.join("、")}。${categoryFlowNote.项目申报}` })),
+};
+
+const legacyProjectCategoryMap: Record<string, ProjectCategory> = {
+  科研: "论文写作",
+  论文撰写: "论文写作",
+  开发: "产品研发",
+  平台开发: "产品研发",
+  申报: "项目申报",
+  竞赛: "竞赛筹备",
+  竞赛管理: "竞赛筹备",
 };
 
 const workflowNodesToText = (nodes: Array<{ title: string; hours: number; review: string }>) =>
@@ -155,17 +322,574 @@ const taskFilters: Array<{ label: string; value: TaskFilter }> = [
   { label: "全部", value: "all" },
 ];
 
+const paperApprovalSnapshots: PaperApprovalSnapshot[] = [
+  {
+    projectId: -104,
+    title: "论文全流程审批",
+    paperTitle: "测试",
+    status: "PENDING",
+    currentNode: "指导人审批",
+    currentApprover: "罗凯宇",
+    applicant: "罗起宁",
+    department: "科技部",
+    guide: "罗凯宇",
+    submitted: false,
+    documentUrl: "https://insight-lab.feishu.cn/wiki/CWi2wc7gSiyeCAkQiQac9Qt8nGc",
+    summary: "来自飞书文档《论文审批流程》与当前审批实例：论文先经过调研材料提交和直接指导人评审，通过后进入开题报告审批；开题通过后进入初稿内审，包含直接指导人、审稿人复审和老师终审。",
+    formItems: [
+      { label: "论文标题", value: "测试" },
+      { label: "负责人", value: "罗起宁" },
+      { label: "部门", value: "科技部" },
+      { label: "指导人", value: "罗凯宇" },
+      { label: "论文是否投出", value: "否" },
+      { label: "调研报告", value: "1" },
+      { label: "创新思路文档", value: "1" },
+    ],
+    stages: [
+      {
+        title: "调研阶段",
+        items: [
+          "负责人提交负责人、所属 BU、调研报告飞书云文档链接。",
+          "直接指导人一轮评审；通过后进入开题报告审批，不通过则退回修改并再次提交。",
+        ],
+      },
+      {
+        title: "开题报告阶段",
+        items: [
+          "负责人提交开题报告文档链接、创新模型代码 Gitee 地址等材料。",
+          "直接指导人初审后邀请 1-2 位审稿人评审；作者需提交修改说明和回复。",
+          "审稿人同意开题后，进入论文初稿写作阶段。",
+        ],
+      },
+      {
+        title: "论文初稿内审阶段",
+        items: [
+          "提交初稿附件，材料不完整直接退回补充。",
+          "直接指导人审稿后邀请 3 位审稿人内审，作者提交回复信和修改稿。",
+          "复审通过后进入老师终审；老师同意后方可投稿或提交后续材料。",
+        ],
+      },
+    ],
+    steps: [
+      { group: "未投出", title: "调研材料提交", owner: "负责人", status: "done", executor: "罗起宁", approver: "系统记录", startedAt: "2026-06-21T09:30:00+08:00", completedAt: "2026-06-21T10:05:00+08:00", materials: ["论文标题", "负责人/部门/指导人", "调研报告", "创新思路文档"], note: "负责人提交论文标题、负责人、部门、指导人、调研报告等字段。" },
+      {
+        group: "未投出",
+        title: "调研一审",
+        owner: "直接指导人",
+        status: "current",
+        executor: "罗起宁",
+        approver: "罗凯宇",
+        startedAt: "2026-06-21T10:05:00+08:00",
+        materials: ["调研报告", "创新思路文档"],
+        note: "当前审批实例停留在指导人审批，等待罗凯宇处理。",
+        guidance: [
+          {
+            id: "guide-research-1",
+            problemType: "执行记录缺失",
+            evidence: ["日报", "项目群聊", "审批材料"],
+            target: "罗起宁",
+            deadline: "2026-06-24",
+            status: "pending",
+            suggestion: "调研报告已经提交，但日报里对创新点拆解和下一步验证计划记录偏少。建议补一版“问题-证据-实验验证”表，并在群里同步本周要验证的两个关键假设。",
+            createdBy: "管理者",
+            createdAt: "2026-06-23T14:20:00+08:00",
+          },
+        ],
+      },
+      { group: "未投出", title: "创新实验提交", owner: "负责人", status: "waiting", executor: "罗起宁", approver: "罗凯宇", materials: ["实验代码", "创新思路"], note: "提交实验代码和创新思路材料。" },
+      { group: "未投出", title: "创新实验审核", owner: "指导人/代码审核人", status: "waiting", executor: "代码审核人", approver: "罗凯宇", materials: ["Gitee 仓库", "复现实验说明"], note: "指导人邀请审核人，对创新实验材料进行复现或审核。" },
+      { group: "未投出", title: "开题材料提交", owner: "负责人", status: "waiting", executor: "罗起宁", approver: "罗凯宇", materials: ["开题报告"], note: "提交开题报告飞书云文档链接。" },
+      { group: "未投出", title: "开题一审", owner: "直接指导人", status: "waiting", executor: "罗起宁", approver: "罗凯宇", materials: ["开题报告", "实验代码"], note: "直接指导人审批开题材料。" },
+      { group: "未投出", title: "开题二审", owner: "开题审稿人", status: "waiting", executor: "开题审稿人", approver: "1-2 位开题审稿人", materials: ["开题报告", "评审意见"], note: "指导人邀请 1-2 位开题审稿人审批。" },
+      { group: "未投出", title: "初稿材料提交", owner: "负责人", status: "waiting", executor: "罗起宁", approver: "罗凯宇", materials: ["初稿 PDF"], note: "提交初稿 PDF 等材料。" },
+      { group: "未投出", title: "论文一审", owner: "直接指导人", status: "waiting", executor: "罗起宁", approver: "罗凯宇", materials: ["初稿 PDF", "修改说明"], note: "负责人提交初稿材料，直接指导人负责审批。" },
+      { group: "未投出", title: "论文二审", owner: "直接指导人", status: "waiting", executor: "罗起宁", approver: "罗凯宇", materials: ["初稿 PDF", "审稿意见字段"], note: "直接指导人继续审批，确认是否进入论文审稿人评审。" },
+      { group: "未投出", title: "论文三审", owner: "论文审稿人", status: "waiting", executor: "论文审稿人", approver: "3 位或以上审稿人", materials: ["评分", "审稿意见", "返修建议"], note: "论文审稿人审批，并填写评分与审稿意见。" },
+      { group: "未投出", title: "论文审核", owner: "检查人", status: "waiting", executor: "检查人", approver: "检查人", materials: ["修改后手稿", "回复信"], note: "负责人提交返修材料后，由检查人检查完整性。" },
+      { group: "未投出", title: "论文终审", owner: "秦老师", status: "waiting", executor: "罗起宁", approver: "秦老师", materials: ["终审稿件", "审稿记录"], note: "秦老师负责最后审批。" },
+      { group: "未投出", title: "投稿材料提交", owner: "负责人", status: "waiting", executor: "罗起宁", approver: "系统记录", materials: ["投出稿件", "投稿会议/期刊", "论文语言"], note: "提交投稿稿件、投出期刊/会议、论文语言等材料。" },
+      { group: "已投出", title: "拒稿重投", owner: "负责人", status: "waiting", executor: "罗起宁", approver: "审稿链路", materials: ["拒稿理由", "重投稿件", "重投会议/期刊"], note: "拒稿后提交拒稿理由、重投稿件、重投会议/期刊等材料。" },
+      { group: "已投出", title: "重投一审", owner: "审稿链路", status: "waiting", executor: "罗起宁", approver: "直接指导人/检查人/秦老师", materials: ["重投材料", "审核记录"], note: "重投后再次进入论文一审、二审、审核、终审链路。" },
+      { group: "已投出", title: "外部返修", owner: "负责人", status: "waiting", executor: "罗起宁", approver: "审稿链路", materials: ["外部返修后的稿件", "外部返修其他材料"], note: "外部返修后提交返修稿件和其他材料。" },
+      { group: "已投出", title: "返修终审", owner: "审稿链路", status: "waiting", executor: "罗起宁", approver: "直接指导人/检查人/秦老师", materials: ["返修稿件", "最终确认"], note: "外部返修后进入论文一审、审核、终审。" },
+    ],
+  },
+];
+
 const tabItems: Array<{ key: ProjectTabKey; title: string }> = [
+  { key: "planning", title: "筹备中" },
   { key: "active", title: "进行中" },
   { key: "completed", title: "已完成" },
-  { key: "archived", title: "已存档" },
+  { key: "archived", title: "已归档" },
 ];
 
 const statusesForTab: Record<ProjectTabKey, ProjectStatus[]> = {
-  active: ["planning", "active", "paused"],
+  planning: ["planning"],
+  active: ["active", "paused"],
   completed: ["completed"],
   archived: ["archived"],
 };
+
+const projectViewItems: Array<{ key: ProjectViewKey; title: string }> = [
+  { key: "table", title: "表格视图" },
+  { key: "kanban", title: "看板节点流" },
+  { key: "gantt", title: "甘特里程碑" },
+];
+
+const nowIso = new Date().toISOString();
+const shouldUseDemoData = import.meta.env.DEV && import.meta.env.VITE_SHOW_DEMO_DATA === "true";
+const addDaysIso = (days: number) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  date.setHours(18, 0, 0, 0);
+  return date.toISOString();
+};
+
+const sampleMembers: Member[] = [
+  {
+    open_id: "sample_owner",
+    name: "周清",
+    role: "staff",
+    department: "产品与工程",
+    position: "项目负责人",
+    title: "项目负责人",
+    status: "active",
+    privacy_level: "internal",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    open_id: "sample_fe",
+    name: "林悦",
+    role: "student",
+    department: "前端组",
+    position: "前端开发",
+    title: "前端开发",
+    status: "active",
+    privacy_level: "internal",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    open_id: "sample_algo",
+    name: "陈岚",
+    role: "student",
+    department: "算法组",
+    position: "算法研究",
+    title: "算法研究",
+    status: "active",
+    privacy_level: "internal",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    open_id: "ou_20fec537961e0a66669370b00d0fc52d",
+    name: "罗起宁",
+    role: "staff",
+    department: "科技部",
+    position: "论文负责人",
+    title: "论文负责人",
+    status: "active",
+    privacy_level: "internal",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    open_id: "ou_fa03a8a212504ef323f28d22edf96204",
+    name: "罗凯宇",
+    role: "staff",
+    department: "安全情报 BU",
+    position: "直接指导人",
+    title: "直接指导人",
+    status: "active",
+    privacy_level: "internal",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+];
+
+const sampleProjectMembers: ProjectMember[] = [
+  { member_open_id: "sample_owner", role: "owner", share_ratio: 50, tags: "统筹", received_at: nowIso, joined_at: nowIso, left_at: null },
+  { member_open_id: "sample_fe", role: "member", share_ratio: 30, tags: "前端", received_at: nowIso, joined_at: nowIso, left_at: null },
+  { member_open_id: "sample_algo", role: "member", share_ratio: 20, tags: "算法", received_at: nowIso, joined_at: nowIso, left_at: null },
+];
+
+const sampleProjects: Project[] = [
+  {
+    project_id: -104,
+    name: "论文：测试",
+    description: "论文全流程审批样例，结合飞书文档《论文审批流程》和当前审批实例，用于在项目下查看论文从调研、开题到初稿内审的推进状态。",
+    status: "active",
+    priority: "high",
+    project_type: "team",
+    my_project_type: "team",
+    owner_open_id: "ou_20fec537961e0a66669370b00d0fc52d",
+    department: "科技部",
+    start_date: addDaysIso(0),
+    target_end_date: addDaysIso(35),
+    actual_end_date: null,
+    tags: "科研 论文 审批",
+    points_awarded: 0,
+    archived_at: null,
+    created_by: "ou_20fec537961e0a66669370b00d0fc52d",
+    created_at: nowIso,
+    updated_at: nowIso,
+    members: [
+      { member_open_id: "ou_20fec537961e0a66669370b00d0fc52d", role: "owner", share_ratio: 60, tags: "负责人", received_at: nowIso, joined_at: nowIso, left_at: null },
+      { member_open_id: "ou_fa03a8a212504ef323f28d22edf96204", role: "co_lead", share_ratio: 40, tags: "指导人 当前审批人", received_at: nowIso, joined_at: nowIso, left_at: null },
+    ],
+    chats: [],
+    days_active: 1,
+    task_count: 6,
+    task_done_count: 1,
+    is_abnormal: false,
+    abnormal_reason: null,
+    abnormal_chat_count: 0,
+  },
+  {
+    project_id: -101,
+    name: "实验室项目管理台优化",
+    description: "重构项目列表的信息密度、筛选路径和任务展开体验，用于本地预览验收。",
+    status: "active",
+    priority: "high",
+    project_type: "team",
+    my_project_type: "team",
+    owner_open_id: "sample_owner",
+    department: "产品与工程",
+    start_date: addDaysIso(-12),
+    target_end_date: addDaysIso(10),
+    actual_end_date: null,
+    tags: "开发 前端 工作台",
+    points_awarded: 0,
+    archived_at: null,
+    created_by: "sample_owner",
+    created_at: addDaysIso(-12),
+    updated_at: addDaysIso(-1),
+    members: sampleProjectMembers,
+    chats: [],
+    days_active: 12,
+    task_count: 5,
+    task_done_count: 2,
+    is_abnormal: false,
+    abnormal_reason: null,
+    abnormal_chat_count: 0,
+  },
+  {
+    project_id: -102,
+    name: "科研成果材料整理",
+    description: "把近期论文、会议纪要和实验记录整理成可检索的项目材料。",
+    status: "planning",
+    priority: "medium",
+    project_type: "team",
+    my_project_type: "team",
+    owner_open_id: "sample_algo",
+    department: "算法组",
+    start_date: addDaysIso(-3),
+    target_end_date: addDaysIso(21),
+    actual_end_date: null,
+    tags: "科研 材料",
+    points_awarded: 0,
+    archived_at: null,
+    created_by: "sample_algo",
+    created_at: addDaysIso(-3),
+    updated_at: nowIso,
+    members: sampleProjectMembers.slice(0, 2),
+    chats: [],
+    days_active: 3,
+    task_count: 4,
+    task_done_count: 0,
+    is_abnormal: true,
+    abnormal_reason: "尚未拆出已完成任务",
+    abnormal_chat_count: 0,
+  },
+  {
+    project_id: -103,
+    name: "竞赛报名与材料提交",
+    description: "完成参赛队伍信息确认、材料汇总和最终提交。",
+    status: "completed",
+    priority: "medium",
+    project_type: "team",
+    my_project_type: "team",
+    owner_open_id: "sample_fe",
+    department: "竞赛组",
+    start_date: addDaysIso(-30),
+    target_end_date: addDaysIso(-2),
+    actual_end_date: addDaysIso(-1),
+    tags: "竞赛 材料",
+    points_awarded: 12,
+    archived_at: null,
+    created_by: "sample_fe",
+    created_at: addDaysIso(-30),
+    updated_at: addDaysIso(-1),
+    members: sampleProjectMembers,
+    chats: [],
+    days_active: 29,
+    task_count: 3,
+    task_done_count: 3,
+    is_abnormal: false,
+    abnormal_reason: null,
+    abnormal_chat_count: 0,
+  },
+  {
+    project_id: -105,
+    name: "省级科研项目申报",
+    description: "围绕申报指南完成方向确认、申报书撰写、附件材料审核和提交归档。",
+    status: "active",
+    priority: "high",
+    project_type: "team",
+    my_project_type: "team",
+    owner_open_id: "sample_owner",
+    department: "申报组",
+    start_date: addDaysIso(-6),
+    target_end_date: addDaysIso(18),
+    actual_end_date: null,
+    tags: "申报 材料 内审",
+    points_awarded: 0,
+    archived_at: null,
+    created_by: "sample_owner",
+    created_at: addDaysIso(-6),
+    updated_at: addDaysIso(-1),
+    members: sampleProjectMembers,
+    chats: [],
+    days_active: 6,
+    task_count: 5,
+    task_done_count: 1,
+    is_abnormal: false,
+    abnormal_reason: null,
+    abnormal_chat_count: 0,
+  },
+];
+
+const sampleTasks: Task[] = [
+  {
+    task_id: -1041,
+    project_id: -104,
+    project_name: "论文：测试",
+    project_tags: "科研 论文 审批",
+    parent_task_id: null,
+    title: "发起论文全流程审批",
+    description: "提交论文标题、负责人、部门、指导人、调研报告和创新思路文档。",
+    status: "done",
+    priority: "high",
+    assignee_open_id: "ou_20fec537961e0a66669370b00d0fc52d",
+    planned_start_date: nowIso,
+    due_date: nowIso,
+    thinking: "以飞书审批实例作为流程起点。",
+    progress_draft: "审批已发起，当前进入指导人审批。",
+    completed_at: nowIso,
+    created_by: "ou_20fec537961e0a66669370b00d0fc52d",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1042,
+    project_id: -104,
+    project_name: "论文：测试",
+    project_tags: "科研 论文 审批",
+    parent_task_id: null,
+    title: "指导人审批调研材料",
+    description: "直接指导人评审调研报告和创新思路，决定是否进入开题报告审批。",
+    status: "in_progress",
+    priority: "high",
+    assignee_open_id: "ou_fa03a8a212504ef323f28d22edf96204",
+    planned_start_date: nowIso,
+    due_date: addDaysIso(2),
+    thinking: "当前审批节点来自飞书实例 current_nodes：指导人审批。",
+    progress_draft: "等待罗凯宇审批。",
+    completed_at: null,
+    created_by: "ou_20fec537961e0a66669370b00d0fc52d",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1043,
+    project_id: -104,
+    project_name: "论文：测试",
+    project_tags: "科研 论文 审批",
+    parent_task_id: null,
+    title: "提交开题报告与模型代码",
+    description: "通过调研审批后，提交开题报告飞书文档链接和 Gitee 代码。",
+    status: "todo",
+    priority: "medium",
+    assignee_open_id: "ou_20fec537961e0a66669370b00d0fc52d",
+    planned_start_date: null,
+    due_date: addDaysIso(7),
+    thinking: "等待指导人审批通过后启动。",
+    progress_draft: null,
+    completed_at: null,
+    created_by: "ou_20fec537961e0a66669370b00d0fc52d",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1044,
+    project_id: -104,
+    project_name: "论文：测试",
+    project_tags: "科研 论文 审批",
+    parent_task_id: null,
+    title: "开题二轮评审与作者回复",
+    description: "邀请 1-2 位评审人审稿，负责人按意见修改并提交回复。",
+    status: "todo",
+    priority: "medium",
+    assignee_open_id: "ou_fa03a8a212504ef323f28d22edf96204",
+    planned_start_date: null,
+    due_date: addDaysIso(14),
+    thinking: "开题材料通过初审后再分配评审人。",
+    progress_draft: null,
+    completed_at: null,
+    created_by: "ou_20fec537961e0a66669370b00d0fc52d",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1045,
+    project_id: -104,
+    project_name: "论文：测试",
+    project_tags: "科研 论文 审批",
+    parent_task_id: null,
+    title: "论文初稿内审",
+    description: "提交初稿附件，完成直接指导人审稿、三位审稿人内审、作者返修和复审评分。",
+    status: "todo",
+    priority: "medium",
+    assignee_open_id: "ou_20fec537961e0a66669370b00d0fc52d",
+    planned_start_date: null,
+    due_date: addDaysIso(26),
+    thinking: "开题同意后进入初稿写作和内审。",
+    progress_draft: null,
+    completed_at: null,
+    created_by: "ou_20fec537961e0a66669370b00d0fc52d",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1046,
+    project_id: -104,
+    project_name: "论文：测试",
+    project_tags: "科研 论文 审批",
+    parent_task_id: null,
+    title: "老师终审与投稿",
+    description: "通过内审后提交老师终审，老师同意后进行投稿或提交后续材料。",
+    status: "todo",
+    priority: "medium",
+    assignee_open_id: "ou_fa03a8a212504ef323f28d22edf96204",
+    planned_start_date: null,
+    due_date: addDaysIso(35),
+    thinking: "终审通过后标记论文投出。",
+    progress_draft: null,
+    completed_at: null,
+    created_by: "ou_20fec537961e0a66669370b00d0fc52d",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1001,
+    project_id: -101,
+    project_name: "实验室项目管理台优化",
+    project_tags: "开发 前端 工作台",
+    parent_task_id: null,
+    title: "梳理项目管理页面信息架构",
+    description: "确认项目、任务、成员、进度指标在首屏中的优先级。",
+    status: "done",
+    priority: "high",
+    assignee_open_id: "sample_owner",
+    planned_start_date: addDaysIso(-10),
+    due_date: addDaysIso(-8),
+    thinking: "先保留真实数据表，再移除干扰模块。",
+    progress_draft: "已完成页面结构梳理。",
+    completed_at: addDaysIso(-8),
+    created_by: "sample_owner",
+    created_at: addDaysIso(-10),
+    updated_at: addDaysIso(-8),
+  },
+  {
+    task_id: -1002,
+    project_id: -101,
+    project_name: "实验室项目管理台优化",
+    project_tags: "开发 前端 工作台",
+    parent_task_id: null,
+    title: "补齐本地样例数据",
+    description: "无后台时展示项目、任务、负责人、状态和进度。",
+    status: "in_progress",
+    priority: "high",
+    assignee_open_id: "sample_fe",
+    planned_start_date: addDaysIso(-1),
+    due_date: addDaysIso(2),
+    thinking: "用前端 fallback 数据，不影响真实接口。",
+    progress_draft: "正在接入样例项目和任务。",
+    completed_at: null,
+    created_by: "sample_owner",
+    created_at: addDaysIso(-1),
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1003,
+    project_id: -101,
+    project_name: "实验室项目管理台优化",
+    project_tags: "开发 前端 工作台",
+    parent_task_id: null,
+    title: "检查移动端表格滚动体验",
+    description: "确认窄屏下筛选和列表不会挤压错位。",
+    status: "todo",
+    priority: "medium",
+    assignee_open_id: "sample_fe",
+    planned_start_date: null,
+    due_date: addDaysIso(5),
+    thinking: null,
+    progress_draft: null,
+    completed_at: null,
+    created_by: "sample_owner",
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1004,
+    project_id: -102,
+    project_name: "科研成果材料整理",
+    project_tags: "科研 材料",
+    parent_task_id: null,
+    title: "确定材料字段和分类标签",
+    description: "定义论文、会议纪要、实验记录的最小字段集合。",
+    status: "blocked",
+    priority: "medium",
+    assignee_open_id: "sample_algo",
+    planned_start_date: addDaysIso(-2),
+    due_date: addDaysIso(-1),
+    thinking: "需要先确认后续检索维度。",
+    progress_draft: "等待负责人确认字段口径。",
+    completed_at: null,
+    created_by: "sample_algo",
+    created_at: addDaysIso(-2),
+    updated_at: nowIso,
+  },
+  {
+    task_id: -1005,
+    project_id: -103,
+    project_name: "竞赛报名与材料提交",
+    project_tags: "竞赛 材料",
+    parent_task_id: null,
+    title: "提交报名材料",
+    description: "完成队伍信息、附件和确认截图归档。",
+    status: "done",
+    priority: "medium",
+    assignee_open_id: "sample_fe",
+    planned_start_date: addDaysIso(-5),
+    due_date: addDaysIso(-2),
+    thinking: "按清单逐项核对。",
+    progress_draft: "材料已提交并归档。",
+    completed_at: addDaysIso(-1),
+    created_by: "sample_fe",
+    created_at: addDaysIso(-5),
+    updated_at: addDaysIso(-1),
+  },
+];
+
+const projectMatchesMember = (project: Project, memberOpenId?: string) =>
+  !memberOpenId
+  || project.owner_open_id === memberOpenId
+  || project.members.some((member) => member.member_open_id === memberOpenId && !member.left_at);
+
+const taskMatchesMember = (task: Task, memberOpenId?: string) =>
+  !memberOpenId || task.assignee_open_id === memberOpenId || task.created_by === memberOpenId;
 
 const splitProjectTags = (value?: string | null) =>
   (value || "")
@@ -174,14 +898,17 @@ const splitProjectTags = (value?: string | null) =>
     .filter(Boolean);
 
 const getProjectCategory = (project: Project): ProjectCategoryFilter => {
-  const category = splitProjectTags(project.tags).find((tag): tag is ProjectCategory =>
-    projectCategoryValues.includes(tag as ProjectCategory),
-  );
-  return category || "all";
+  for (const tag of splitProjectTags(project.tags)) {
+    if (projectCategoryValues.includes(tag as ProjectCategory)) return tag as ProjectCategory;
+    if (legacyProjectCategoryMap[tag]) return legacyProjectCategoryMap[tag];
+  }
+  return "all";
 };
 
 const getProjectCustomTags = (value?: string | null) =>
-  splitProjectTags(value).filter((tag) => !projectCategoryValues.includes(tag as ProjectCategory)).join(" ");
+  splitProjectTags(value)
+    .filter((tag) => !projectCategoryValues.includes(tag as ProjectCategory) && !legacyProjectCategoryMap[tag])
+    .join(" ");
 
 const combineProjectTags = (category: ProjectCategoryFilter, customTags: string) => {
   const tags = splitProjectTags(customTags);
@@ -191,10 +918,126 @@ const combineProjectTags = (category: ProjectCategoryFilter, customTags: string)
 
 const taskProjectLabel = (task: Task) => task.project_name || "独立任务";
 
+const getPaperApprovalSnapshot = (projectId: number) =>
+  paperApprovalSnapshots.find((snapshot) => snapshot.projectId === projectId);
+
+const getStandardApprovalSnapshot = (project: Project): PaperApprovalSnapshot | undefined => {
+  const category = getProjectCategory(project);
+  if (category === "all") return undefined;
+  const template = standardApprovalTemplates[category];
+  const doneCount = Math.min(project.task_done_count || 0, template.length);
+  const hasCurrent = project.status !== "completed" && doneCount < template.length;
+  const steps: PaperApprovalStep[] = template.map((step, index) => {
+    const status: PaperApprovalStepStatus = index < doneCount ? "done" : index === doneCount && hasCurrent ? "current" : "waiting";
+    return {
+      ...step,
+      status,
+      executor: step.executor === "负责人" ? (project.owner_open_id ? "项目负责人" : step.executor) : step.executor,
+      startedAt: status === "done" || status === "current" ? addDaysIso(index * 2 - doneCount * 2) : undefined,
+      completedAt: status === "done" ? addDaysIso(index * 2 - doneCount * 2 + 1) : undefined,
+    };
+  });
+  const currentStep = steps.find((step) => step.status === "current") || steps[steps.length - 1];
+  return {
+    projectId: project.project_id,
+    title: `${category}标准审批流程`,
+    paperTitle: project.name,
+    status: project.status === "completed" ? "APPROVED" : "PENDING",
+    currentNode: currentStep.title,
+    currentApprover: currentStep.approver || currentStep.owner,
+    applicant: "项目负责人",
+    department: project.department || "未设置",
+    guide: currentStep.approver || currentStep.owner,
+    submitted: doneCount > 0,
+    documentUrl: "",
+    summary: `${category}项目会自动关联该方向的标准节点与审批流程；创建或编辑项目时选择分类后，列表下方会展示对应进度。`,
+    formItems: [
+      { label: "项目分类", value: category },
+      { label: "项目名称", value: project.name },
+      { label: "所属部门", value: project.department || "未设置" },
+      { label: "当前节点", value: currentStep.title },
+    ],
+    stages: template.map((step) => ({
+      title: step.title,
+      items: [
+        `节点：${(categoryStageTemplates[category].find((stage) => stage.title === step.title)?.nodes || []).join("、")}`,
+        `标准材料：${(step.materials || []).slice(0, 3).join("、") || "待补充"}`,
+      ],
+    })),
+    steps,
+  };
+};
+
+const getProjectApprovalSnapshot = (project: Project) =>
+  getPaperApprovalSnapshot(project.project_id) || getStandardApprovalSnapshot(project);
+
+const getPaperApprovalProgress = (snapshot: PaperApprovalSnapshot) => {
+  const doneCount = snapshot.steps.filter((step) => step.status === "done").length;
+  const currentWeight = snapshot.steps.some((step) => step.status === "current") ? 0.5 : 0;
+  return Math.round(((doneCount + currentWeight) / snapshot.steps.length) * 100);
+};
+
+const mergePinnedSamples = <T extends { project_id: number }>(items: T[], samples: T[]) => {
+  if (!shouldUseDemoData) return items;
+  const seen = new Set<number>();
+  return [...samples, ...items].filter((item) => {
+    if (seen.has(item.project_id)) return false;
+    seen.add(item.project_id);
+    return true;
+  });
+};
+
+const mergePinnedTasks = (items: Task[], samples: Task[]) => {
+  if (!shouldUseDemoData) return items;
+  const seen = new Set<number>();
+  return [...samples, ...items].filter((item) => {
+    if (seen.has(item.task_id)) return false;
+    seen.add(item.task_id);
+    return true;
+  });
+};
+
 const formatDate = (value?: string | null): string => {
   if (!value) return "未设置";
   const normalized = value.replace("T", " ");
   return normalized.length >= 16 ? normalized.slice(0, 16) : normalized;
+};
+
+const formatShortDate = (value?: string | null): string => {
+  if (!value) return "待定";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+};
+
+const daysBetween = (start?: string | null, end?: string | null): number | null => {
+  if (!start) return null;
+  const startMs = new Date(start).getTime();
+  const endMs = end ? new Date(end).getTime() : Date.now();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  return Math.max(0, Math.ceil((endMs - startMs) / 86400000));
+};
+
+const approvalStepDateLabel = (step: PaperApprovalStep) => {
+  if (step.completedAt) return `完成 ${formatShortDate(step.completedAt)}`;
+  if (step.status === "current") return `停留 ${formatShortDate(step.startedAt)}`;
+  return "待流转";
+};
+
+const approvalLineDaysLabel = (step: PaperApprovalStep, next?: PaperApprovalStep) => {
+  if (step.status === "current") {
+    const days = daysBetween(step.startedAt, null);
+    return days === null ? "停留中" : `停留${days}天`;
+  }
+  if (step.completedAt && next?.startedAt) {
+    const days = daysBetween(step.completedAt, next.startedAt);
+    return days === null ? "" : `${days}天`;
+  }
+  if (step.completedAt && next?.status === "current") {
+    const days = daysBetween(step.completedAt, next.startedAt);
+    return days === null ? "" : `${days}天`;
+  }
+  return "";
 };
 
 const toDateInputValue = (value?: string | null): string => {
@@ -303,7 +1146,9 @@ const fetchAllMembers = async (): Promise<Member[]> => {
 const projectPanelStyles = `
   .pm-workbench {
     min-height: calc(100vh - 56px);
-    background: #F7F8FA;
+    background:
+      linear-gradient(180deg, #F5F7FB 0, #F7F8FA 220px),
+      #F7F8FA;
     color: #1F2329;
     font-family: Inter, Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
   }
@@ -317,8 +1162,9 @@ const projectPanelStyles = `
     justify-content: space-between;
     gap: 16px;
     padding: 0 18px;
-    background: #FFFFFF;
+    background: rgba(255,255,255,0.96);
     border-bottom: 1px solid #E5E6EB;
+    backdrop-filter: blur(10px);
   }
   .pm-brand {
     display: flex;
@@ -330,7 +1176,7 @@ const projectPanelStyles = `
     width: 22px;
     height: 22px;
     border-radius: 5px;
-    background: #3370FF;
+    background: linear-gradient(135deg, #3370FF, #14B8A6);
     color: #FFFFFF;
     display: inline-flex;
     align-items: center;
@@ -376,6 +1222,13 @@ const projectPanelStyles = `
     align-items: center;
     justify-content: center;
     gap: 5px;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .pm-tool-btn:hover,
+  .pm-row-action:hover {
+    border-color: #BACEFD;
+    background: #F7FAFF;
+    color: #1D4ED8;
   }
   .pm-tab-btn {
     border-color: transparent;
@@ -398,17 +1251,28 @@ const projectPanelStyles = `
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
+    transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .pm-primary-btn:hover {
+    background: #1D4ED8;
+    box-shadow: 0 6px 14px rgba(51,112,255,0.18);
+    transform: translateY(-1px);
+  }
+  .pm-unified-search {
+    position: relative;
+    width: 300px;
   }
   .pm-search {
-    width: 220px;
+    width: 100%;
     height: 30px;
     border: 1px solid #E5E6EB;
     border-radius: 5px;
-    background: #FFFFFF;
+    background: rgba(255,255,255,0.88);
     color: #1F2329;
-    padding: 0 10px;
+    padding: 0 32px 0 10px;
     font-size: 13px;
     outline: none;
+    box-sizing: border-box;
   }
   .pm-select {
     width: 180px;
@@ -425,48 +1289,142 @@ const projectPanelStyles = `
     border-color: #3370FF;
     box-shadow: 0 0 0 2px rgba(51,112,255,0.08);
   }
+  .pm-search-clear {
+    position: absolute;
+    right: 5px;
+    top: 4px;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: #8F959E;
+    cursor: pointer;
+  }
+  .pm-search-clear:hover {
+    background: #F2F3F5;
+    color: #1F2329;
+  }
+  .pm-people-popover {
+    position: absolute;
+    z-index: 40;
+    top: 36px;
+    left: 0;
+    width: 340px;
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid #DDE4EE;
+    border-radius: 10px;
+    background: #FFFFFF;
+    box-shadow: 0 18px 42px rgba(31,35,41,0.16);
+    padding: 8px;
+  }
+  .pm-people-popover-title {
+    color: #646A73;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 4px 6px 8px;
+  }
+  .pm-people-option {
+    width: 100%;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .pm-people-option:hover {
+    background: #F0F6FF;
+  }
+  .pm-people-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    background: #EEF4FF;
+    color: #3370FF;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 900;
+    flex: 0 0 auto;
+  }
+  .pm-people-main {
+    min-width: 0;
+  }
+  .pm-people-name {
+    color: #1F2329;
+    font-size: 13px;
+    font-weight: 850;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-people-meta {
+    margin-top: 3px;
+    color: #8F959E;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .pm-layout {
     display: grid;
     grid-template-columns: 220px minmax(0, 1fr);
     min-height: calc(100vh - 48px);
   }
   .pm-sidebar {
-    background: #FFFFFF;
+    position: sticky;
+    top: 48px;
+    align-self: start;
+    height: calc(100vh - 48px);
+    overflow-y: auto;
+    background: linear-gradient(180deg, #FBFCFF 0%, #F6F8FC 100%);
     border-right: 1px solid #E5E6EB;
-    padding: 12px 10px;
+    padding: 14px 10px;
+    overscroll-behavior: contain;
   }
   .pm-sidebar-section {
-    margin-bottom: 16px;
+    margin-bottom: 18px;
   }
   .pm-sidebar-title {
-    padding: 0 8px 6px;
-    color: #8F959E;
-    font-size: 12px;
-    font-weight: 700;
+    padding: 0 9px 7px;
+    color: #6B7280;
+    font-size: 13px;
+    font-weight: 850;
   }
   .pm-nav-item {
     width: 100%;
-    height: 34px;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
+    min-height: 38px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.56);
     color: #1F2329;
-    padding: 0 8px;
+    padding: 0 9px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 650;
     cursor: pointer;
     position: relative;
+    margin-bottom: 5px;
   }
   .pm-nav-item:hover {
-    background: #F2F3F5;
+    background: #FFFFFF;
+    border-color: #DDE6F6;
   }
   .pm-nav-item[data-active="true"] {
-    background: #F0F6FF;
+    background: #EEF5FF;
+    border-color: #BACEFD;
     color: #3370FF;
-    font-weight: 700;
+    font-weight: 850;
+    box-shadow: 0 6px 16px rgba(51,112,255,0.08);
   }
   .pm-nav-item[data-active="true"]::before {
     content: "";
@@ -479,8 +1437,27 @@ const projectPanelStyles = `
     background: #3370FF;
   }
   .pm-nav-count {
-    color: #8F959E;
+    color: #7B8494;
     font-size: 12px;
+    font-weight: 800;
+  }
+  .pm-nav-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .pm-nav-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    background: #EEF4FF;
+    color: #3370FF;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    flex: 0 0 auto;
   }
   .pm-sidebar-metric {
     padding: 8px;
@@ -507,9 +1484,30 @@ const projectPanelStyles = `
     height: 100%;
     background: #3370FF;
   }
+  .pm-approval-progress > span {
+    background: #14B8A6;
+  }
+  .pm-approval-inline {
+    min-width: 0;
+  }
+  .pm-approval-inline-sub {
+    margin-top: 4px;
+    color: #646A73;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .pm-main {
     min-width: 0;
-    padding: 12px 14px 20px;
+    padding: 14px 16px 22px;
+    background: #F3F6FB;
+  }
+  .pm-metric-card {
+    border: 1px solid #D8E2F0;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #FFFFFF 0%, #F9FBFF 100%);
+    box-shadow: 0 10px 28px rgba(31,35,41,0.04);
   }
   .pm-toolbar {
     min-height: 44px;
@@ -518,7 +1516,7 @@ const projectPanelStyles = `
     justify-content: space-between;
     gap: 12px;
     background: #FFFFFF;
-    border: 1px solid #E5E6EB;
+    border: 1px solid #DDE3EC;
     border-radius: 6px 6px 0 0;
     padding: 8px 10px;
   }
@@ -550,15 +1548,523 @@ const projectPanelStyles = `
     padding: 4px 9px;
   }
   .pm-content {
-    background: #FFFFFF;
-    border: 1px solid #E5E6EB;
+    background: #F7F9FC;
+    border: 1px solid #D8E2F0;
     border-top: 0;
-    border-radius: 0 0 6px 6px;
+    border-radius: 0 0 10px 10px;
     min-height: 520px;
+    overflow: hidden;
+    box-shadow: 0 8px 22px rgba(31,35,41,0.04);
+  }
+  .pm-summary-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin: 10px 0;
+  }
+  .pm-cockpit {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .pm-cockpit-hero {
+    border-radius: 12px;
+    background: linear-gradient(120deg, #172642, #2B1D49);
+    color: #FFFFFF;
+    padding: 18px;
+  }
+  .pm-cockpit-kicker {
+    color: rgba(255,255,255,0.72);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.8px;
+  }
+  .pm-cockpit-title {
+    margin-top: 6px;
+    font-size: 22px;
+    font-weight: 900;
+  }
+  .pm-cockpit-sub {
+    margin-top: 6px;
+    color: rgba(255,255,255,0.76);
+    font-size: 13px;
+  }
+  .pm-identity-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .pm-identity-item {
+    border-radius: 8px;
+    background: rgba(255,255,255,0.12);
+    padding: 9px 10px;
+    min-width: 0;
+  }
+  .pm-identity-item small {
+    display: block;
+    color: rgba(255,255,255,0.66);
+    font-size: 11px;
+  }
+  .pm-identity-item b {
+    display: block;
+    margin-top: 3px;
+    color: rgba(255,255,255,0.94);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-identity-switch {
+    display: inline-flex;
+    gap: 6px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.12);
+    padding: 4px;
+    margin-top: 12px;
+  }
+  .pm-identity-switch button {
+    height: 28px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255,255,255,0.78);
+    padding: 0 10px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .pm-identity-switch button[data-active="true"] {
+    background: #FFFFFF;
+    color: #1D4ED8;
+  }
+  .pm-cockpit-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 12px;
+  }
+  .pm-cockpit-panel {
+    border: 1px solid #DDE6F6;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #FFFFFF 0%, #F7FAFF 100%);
+    padding: 14px;
+    min-width: 0;
+  }
+  .pm-cockpit-panel h3 {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 0 0 10px;
+    color: #1F2329;
+    font-size: 14px;
+  }
+  .pm-cockpit-panel h3 span {
+    color: #8F959E;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .pm-brief-list {
+    display: grid;
+    gap: 8px;
+  }
+  .pm-brief-item {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+    gap: 9px;
+    align-items: start;
+    border: 1px solid #F0F2F5;
+    border-radius: 8px;
+    background: #FAFBFC;
+    padding: 9px;
+  }
+  .pm-brief-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    margin-top: 5px;
+  }
+  .pm-brief-title {
+    color: #1F2329;
+    font-size: 13px;
+    font-weight: 800;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-brief-desc {
+    margin-top: 2px;
+    color: #646A73;
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .pm-cockpit-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+  }
+  .pm-cockpit-metric {
+    border-radius: 10px;
+    background: #EEF5FF;
+    padding: 12px;
+  }
+  .pm-cockpit-metric small {
+    color: #646A73;
+    font-size: 12px;
+  }
+  .pm-cockpit-metric b {
+    display: block;
+    margin-top: 4px;
+    color: #111827;
+    font-size: 24px;
+  }
+  .pm-line-health {
+    display: grid;
+    gap: 7px;
+    margin-top: 12px;
+  }
+  .pm-line-health-row {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 34px;
+    gap: 8px;
+    align-items: center;
+    color: #646A73;
+    font-size: 12px;
+  }
+  .pm-line-health-bar {
+    height: 7px;
+    border-radius: 999px;
+    background: #EEF0F4;
+    overflow: hidden;
+  }
+  .pm-line-health-bar i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+  }
+  .pm-view-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .pm-view-switch button {
+    height: 28px;
+    border: 1px solid #E5E6EB;
+    border-radius: 6px;
+    background: #FFFFFF;
+    color: #4E5969;
+    padding: 0 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .pm-view-switch button[data-active="true"] {
+    border-color: #3370FF;
+    background: #F0F6FF;
+    color: #3370FF;
+    font-weight: 800;
+  }
+  .pm-category-select {
+    height: 30px;
+    min-width: 128px;
+    border: 1px solid #E5E6EB;
+    border-radius: 6px;
+    background: #FFFFFF;
+    color: #1F2329;
+    padding: 0 30px 0 10px;
+    font-size: 12px;
+    font-weight: 800;
+    outline: none;
+  }
+  .pm-category-select:focus {
+    border-color: #3370FF;
+    box-shadow: 0 0 0 3px rgba(51,112,255,0.12);
+  }
+  .pm-view-panel {
+    padding: 12px;
+  }
+  .pm-board-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(180px, 1fr));
+    gap: 12px;
+    min-width: 1320px;
+  }
+  .pm-board-column {
+    border: 1px solid #DDE6F6;
+    border-radius: 10px;
+    background: #F0F6FF;
+    min-height: 280px;
+    padding: 10px;
+  }
+  .pm-board-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: #1F2329;
+    font-size: 13px;
+    font-weight: 850;
+    margin-bottom: 9px;
+  }
+  .pm-board-card {
+    width: 100%;
+    border: 1px solid #E5E6EB;
+    border-radius: 8px;
+    background: #FFFFFF;
+    padding: 9px;
+    margin-bottom: 8px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .pm-board-card b {
+    display: block;
+    color: #1F2329;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-board-card small {
+    display: block;
+    margin-top: 5px;
+    color: #646A73;
+    font-size: 12px;
+  }
+  .pm-gantt-sheet {
+    min-width: 1080px;
+    border: 1px solid #D4E0F0;
+    border-radius: 10px;
+    background: #FFFFFF;
+    overflow: hidden;
+  }
+  .pm-gantt-head,
+  .pm-gantt-row {
+    display: grid;
+    grid-template-columns: 260px 108px 96px 96px 1fr;
+    align-items: center;
+  }
+  .pm-gantt-head {
+    min-height: 38px;
+    background: #F7F9FC;
+    border-bottom: 1px solid #E5E6EB;
+    color: #646A73;
+    font-size: 12px;
+    font-weight: 850;
+  }
+  .pm-gantt-head > span,
+  .pm-gantt-cell {
+    min-width: 0;
+    padding: 8px 10px;
+    border-right: 1px solid #EEF0F4;
+  }
+  .pm-gantt-row {
+    min-height: 46px;
+    border-bottom: 1px solid #F0F2F5;
+    background: #FFFFFF;
+    cursor: pointer;
+  }
+  .pm-gantt-row:hover {
+    background: #F7FAFF;
+  }
+  .pm-gantt-name {
+    min-width: 0;
+    color: #1F2329;
+    font-size: 13px;
+    font-weight: 800;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-gantt-days {
+    display: grid;
+    height: 100%;
+  }
+  .pm-gantt-day {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 1px solid #EEF0F4;
+    color: #646A73;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .pm-gantt-track {
+    position: relative;
+    height: 100%;
+    min-height: 46px;
+    background-image: linear-gradient(to right, #EEF0F4 1px, transparent 1px);
+    background-size: 44px 100%;
+  }
+  .pm-gantt-bar {
+    position: absolute;
+    top: 13px;
+    display: block;
+    height: 20px;
+    min-width: 24px;
+    border-radius: 5px;
+    background: linear-gradient(90deg, #3370FF, #14B8A6);
+    box-shadow: 0 4px 10px rgba(51,112,255,0.22);
+  }
+  .pm-gantt-bar[data-status="planning"] {
+    background: linear-gradient(90deg, #8FC0FF, #3370FF);
+  }
+  .pm-gantt-bar[data-status="completed"],
+  .pm-gantt-bar[data-status="archived"] {
+    background: linear-gradient(90deg, #34C759, #14B8A6);
+  }
+  .pm-metric-card {
+    padding: 12px;
+  }
+  .pm-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+    gap: 8px;
+  }
+  .pm-metric-item {
+    border: 1px solid #EEF0F4;
+    border-radius: 7px;
+    background: #FAFBFC;
+    padding: 9px;
+  }
+  .pm-metric-number {
+    color: #1F2329;
+    font-size: 18px;
+    line-height: 1.1;
+    font-weight: 850;
+  }
+  .pm-metric-number[data-tone="good"] {
+    color: #15803D;
+  }
+  .pm-metric-number[data-tone="warn"] {
+    color: #B45309;
+  }
+  .pm-metric-number[data-tone="danger"] {
+    color: #B91C1C;
+  }
+  .pm-status-overview-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    grid-column: 1 / -1;
+  }
+  .pm-status-card {
+    border: 1px solid #DDE6F6;
+    border-radius: 10px;
+    background: #F8FBFF;
+    padding: 9px;
+    min-width: 0;
+  }
+  .pm-status-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 7px;
+  }
+  .pm-status-card-title {
+    color: #646A73;
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .pm-status-card-count {
+    color: #1F2329;
+    font-size: 18px;
+    line-height: 1;
+    font-weight: 900;
+  }
+  .pm-status-project-list {
+    display: grid;
+    gap: 4px;
+    max-height: 168px;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-width: thin;
+    overscroll-behavior: contain;
+  }
+  .pm-status-project-name {
+    width: 100%;
+    border: 0;
+    border-radius: 4px;
+    background: #FFFFFF;
+    color: #1F2329;
+    padding: 4px 6px;
+    font-size: 12px;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .pm-status-project-name:hover,
+  .pm-status-project-name:focus-visible {
+    color: #3370FF;
+    background: #F0F6FF;
+    outline: none;
+  }
+  .pm-status-card-empty {
+    color: #A8ABB2;
+    font-size: 12px;
+    padding: 4px 0;
   }
   .pm-table-scroll {
     width: 100%;
     overflow-x: auto;
+  }
+  .pm-project-list {
+    display: grid;
+    gap: 14px;
+    padding: 12px;
+    background: #F4F6FA;
+  }
+  .pm-project-card {
+    border: 1px solid #D6E1EF;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
+    box-shadow: 0 8px 20px rgba(31,35,41,0.06);
+    overflow: hidden;
+    scroll-margin-top: 76px;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  }
+  .pm-project-card[data-highlight="true"] {
+    border-color: #3370FF;
+    box-shadow: 0 0 0 3px rgba(51,112,255,0.16), 0 8px 20px rgba(31,35,41,0.06);
+    background: #F8FBFF;
+  }
+  .pm-project-card-head {
+    display: grid;
+    grid-template-columns: minmax(220px, 1.35fr) minmax(110px, 0.52fr) minmax(90px, 0.45fr) minmax(80px, 0.42fr) minmax(150px, 0.74fr) minmax(60px, 0.3fr) minmax(110px, 0.55fr) minmax(60px, 0.3fr);
+    gap: 10px;
+    align-items: center;
+    min-width: 820px;
+    padding: 10px 12px;
+  }
+  .pm-project-card-labels {
+    display: grid;
+    grid-template-columns: minmax(220px, 1.35fr) minmax(110px, 0.52fr) minmax(90px, 0.45fr) minmax(80px, 0.42fr) minmax(150px, 0.74fr) minmax(60px, 0.3fr) minmax(110px, 0.55fr) minmax(60px, 0.3fr);
+    gap: 10px;
+    min-width: 820px;
+    padding: 8px 12px;
+    color: #646A73;
+    font-size: 11px;
+    font-weight: 800;
+    border-bottom: 1px solid #E5E6EB;
+    background: #F7F8FA;
+  }
+  .pm-project-card-cell {
+    min-width: 0;
+    color: #1F2329;
+    font-size: 12px;
+  }
+  .pm-project-card-cell-action {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+  }
+  .pm-project-card-label-action {
+    text-align: right;
+  }
+  .pm-project-card:hover {
+    border-color: #C8D6EA;
+    box-shadow: 0 10px 24px rgba(31,35,41,0.08);
   }
   .pm-table {
     width: 100%;
@@ -566,25 +2072,601 @@ const projectPanelStyles = `
     table-layout: fixed;
   }
   .pm-table th {
-    height: 36px;
-    padding: 0 10px;
+    height: 32px;
+    padding: 0 9px;
     border-bottom: 1px solid #E5E6EB;
-    background: #FAFAFA;
+    background: #F7F8FA;
     color: #646A73;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
     text-align: left;
   }
   .pm-table td {
-    height: 44px;
-    padding: 7px 10px;
+    height: 40px;
+    padding: 6px 9px;
     border-bottom: 1px solid #E8EAED;
     color: #1F2329;
-    font-size: 13px;
+    font-size: 12px;
     vertical-align: middle;
   }
   .pm-table tr:hover td {
     background: #F7FAFF;
+  }
+  .pm-table tr[data-expanded="true"] td {
+    background: #F7FAFF;
+  }
+  .pm-project-table tbody tr.pm-project-main-row td {
+    background: #FFFFFF;
+    border-top: 12px solid #F4F6FA;
+    border-bottom: 1px solid #E6EAF2;
+  }
+  .pm-project-table tbody tr.pm-project-main-row td:first-child {
+    border-left: 1px solid #E1E7F0;
+    border-radius: 8px 0 0 0;
+  }
+  .pm-project-table tbody tr.pm-project-main-row td:last-child {
+    border-right: 1px solid #E1E7F0;
+    border-radius: 0 8px 0 0;
+  }
+  .pm-project-table tbody tr.pm-project-main-row[data-has-approval="false"] td {
+    border-bottom: 1px solid #E1E7F0;
+  }
+  .pm-project-table tbody tr.pm-project-main-row[data-has-approval="false"] td:first-child {
+    border-radius: 8px 0 0 8px;
+  }
+  .pm-project-table tbody tr.pm-project-main-row[data-has-approval="false"] td:last-child {
+    border-radius: 0 8px 8px 0;
+  }
+  .pm-project-table tbody tr.pm-project-main-row:hover td {
+    background: #FBFCFF;
+  }
+  .pm-approval-board-row {
+    background: #F3F7FF;
+    padding: 8px 10px 10px;
+    border-top: 1px solid #E8EEF8;
+  }
+  .pm-approval-board-row:hover {
+    background: #F3F7FF;
+  }
+  .pm-stage-node-map {
+    background: #FFFFFF;
+    border-top: 1px solid #EEF3FB;
+    padding: 9px 10px 10px;
+  }
+  .pm-stage-node-map-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    color: #646A73;
+    font-size: 11px;
+  }
+  .pm-stage-node-map-head span {
+    color: #1F2329;
+    font-weight: 850;
+  }
+  .pm-stage-node-map-head b {
+    color: #3370FF;
+    font-size: 11px;
+  }
+  .pm-stage-node-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(132px, 1fr));
+    gap: 7px;
+    overflow-x: auto;
+  }
+  .pm-stage-node-item {
+    min-width: 132px;
+    border: 1px solid #E8EEF8;
+    border-radius: 7px;
+    background: #FAFCFF;
+    padding: 7px;
+  }
+  .pm-stage-node-title {
+    color: #1D4ED8;
+    font-size: 11px;
+    line-height: 1.25;
+    font-weight: 850;
+    margin-bottom: 5px;
+  }
+  .pm-stage-node-list {
+    color: #4E5969;
+    font-size: 11px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+  .pm-approval-board {
+    max-width: none;
+    margin: 0;
+    border: 1px solid #D8E4F8;
+    border-radius: 8px;
+    background: #FFFFFF;
+    padding: 8px 10px;
+    box-shadow: 0 4px 14px rgba(31,35,41,0.04);
+    cursor: pointer;
+  }
+  .pm-approval-board-head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: #646A73;
+    font-size: 11px;
+    margin-bottom: 7px;
+    flex-wrap: wrap;
+    padding-bottom: 7px;
+    border-bottom: 1px solid #EEF3FB;
+  }
+  .pm-approval-board-head > span:first-child {
+    color: #1F2329;
+    font-weight: 800;
+  }
+  .pm-approval-board-head b {
+    color: #1D4ED8;
+    font-size: 12px;
+  }
+  .pm-approval-node-flow {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    margin-top: 0;
+    overflow-x: auto;
+    padding: 3px 0 5px;
+    background: #FAFCFF;
+    border-radius: 6px;
+  }
+  .pm-approval-node-wrap {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    width: 76px;
+    flex: 0 0 76px;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+  }
+  .pm-approval-node-wrap:hover .pm-approval-node {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(31,35,41,0.12);
+  }
+  .pm-approval-node {
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    border: 2px solid #32C15B;
+    background: #EAFBE8;
+    color: #168A35;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 850;
+    box-sizing: border-box;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .pm-approval-node-wrap[data-status="current"] .pm-approval-node {
+    border-color: #3370FF;
+    background: #3370FF;
+    color: #FFFFFF;
+    box-shadow: 0 0 0 3px rgba(51,112,255,0.12);
+  }
+  .pm-approval-node-wrap[data-selected="true"] .pm-approval-node {
+    outline: 2px solid rgba(51,112,255,0.28);
+    outline-offset: 2px;
+  }
+  .pm-approval-node-wrap[data-status="waiting"] .pm-approval-node {
+    border-color: #C6CBD2;
+    color: #8F959E;
+    background: #FFFFFF;
+  }
+  .pm-approval-node-label {
+    width: 74px;
+    color: #1F2329;
+    font-size: 9px;
+    line-height: 1.25;
+    text-align: center;
+    word-break: keep-all;
+  }
+  .pm-approval-node-date {
+    color: #8F959E;
+    font-size: 9px;
+    line-height: 1.1;
+    height: 11px;
+    max-width: 74px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-approval-node-wrap[data-status="done"] .pm-approval-node-date {
+    color: #15803D;
+  }
+  .pm-approval-node-wrap[data-status="current"] .pm-approval-node-date {
+    color: #1D4ED8;
+    font-weight: 700;
+  }
+  .pm-approval-line {
+    height: 2px;
+    width: 24px;
+    flex: 0 0 24px;
+    margin-top: 19px;
+    background: #BFC6D1;
+    position: relative;
+  }
+  .pm-approval-line span {
+    position: absolute;
+    left: 50%;
+    top: -15px;
+    transform: translateX(-50%);
+    color: #8F959E;
+    font-size: 9px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .pm-approval-line::after {
+    content: "";
+    position: absolute;
+    right: -1px;
+    top: -3px;
+    width: 6px;
+    height: 6px;
+    border-top: 2px solid #C6CBD2;
+    border-right: 2px solid #C6CBD2;
+    transform: rotate(45deg);
+  }
+  .pm-approval-line[data-active="true"] {
+    background: #74C989;
+  }
+  .pm-approval-line[data-active="true"]::after {
+    border-color: #74C989;
+  }
+  .pm-approval-line[data-active="true"] span {
+    color: #15803D;
+  }
+  .pm-approval-node-wrap[data-status="done"] .pm-approval-node-label {
+    color: #15803D;
+    font-weight: 700;
+  }
+  .pm-approval-node-wrap[data-status="current"] .pm-approval-node-label {
+    color: #1D4ED8;
+    font-weight: 850;
+  }
+  .pm-approval-node-group {
+    color: #8F959E;
+    font-size: 9px;
+    line-height: 1.1;
+    height: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 74px;
+  }
+  .pm-approval-dialog {
+    display: grid;
+    gap: 12px;
+    text-align: left;
+  }
+  .pm-approval-dialog-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .pm-approval-dialog-grid div,
+  .pm-approval-dialog-section {
+    border: 1px solid #E8EAED;
+    border-radius: 6px;
+    background: #FAFBFC;
+    padding: 8px;
+  }
+  .pm-approval-dialog span {
+    display: block;
+    color: #8F959E;
+    font-size: 12px;
+    margin-bottom: 3px;
+  }
+  .pm-approval-dialog b {
+    display: block;
+    color: #1F2329;
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .pm-approval-dialog p {
+    margin: 0;
+    color: #1F2329;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .pm-approval-node-panel {
+    margin-top: 10px;
+    border: 1px solid #C9D8F0;
+    border-radius: 7px;
+    background: #FBFCFF;
+    padding: 10px;
+    box-shadow: inset 3px 0 0 #3370FF;
+  }
+  .pm-approval-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #E5ECF8;
+  }
+  .pm-approval-panel-title {
+    color: #1F2329;
+    font-size: 13px;
+    font-weight: 850;
+  }
+  .pm-approval-panel-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .pm-approval-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .pm-approval-panel-grid div {
+    border: 1px solid #EEF0F4;
+    border-radius: 6px;
+    background: #FAFBFC;
+    padding: 7px;
+    min-width: 0;
+  }
+  .pm-approval-panel-grid span,
+  .pm-approval-panel-box > .pm-muted {
+    color: #8F959E;
+    font-size: 11px;
+  }
+  .pm-approval-panel-grid b {
+    display: block;
+    margin-top: 2px;
+    color: #1F2329;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .pm-approval-panel-split {
+    display: grid;
+    grid-template-columns: minmax(240px, 0.82fr) minmax(320px, 1.18fr);
+    gap: 10px;
+  }
+  .pm-approval-panel-box {
+    border: 1px solid #E0E7F2;
+    border-radius: 6px;
+    background: #FFFFFF;
+    padding: 9px;
+  }
+  .pm-approval-material-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .pm-approval-material-list label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 24px;
+    border: 1px solid #E5E6EB;
+    border-radius: 999px;
+    background: #FFFFFF;
+    padding: 0 8px;
+    color: #1F2329;
+    font-size: 12px;
+  }
+  .pm-approval-material-table {
+    display: grid;
+    gap: 8px;
+  }
+  .pm-approval-material-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 0.8fr) minmax(240px, 1fr) 96px;
+    gap: 8px;
+    align-items: center;
+    border: 1px solid #EEF0F4;
+    border-radius: 6px;
+    background: #FAFBFC;
+    padding: 8px;
+  }
+  .pm-approval-material-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .pm-approval-material-name span {
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    background: #E8F3FF;
+    color: #1D4ED8;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 800;
+    flex: 0 0 auto;
+  }
+  .pm-approval-material-name b {
+    color: #1F2329;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-upload-btn {
+    height: 30px;
+    border: 1px solid #BACEFD;
+    border-radius: 5px;
+    background: #F7FAFF;
+    color: #1D4ED8;
+    font-size: 12px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .pm-upload-btn input {
+    display: none;
+  }
+  .pm-material-readonly {
+    min-height: 36px;
+    border: 1px solid #E5E6EB;
+    border-radius: 6px;
+    background: #FAFAFA;
+    color: #646A73;
+    padding: 8px 10px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .pm-material-readonly a {
+    color: #1D4ED8;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .pm-guidance-box {
+    margin-top: 10px;
+    border: 1px solid #E4D7FF;
+    border-radius: 6px;
+    background: #FCFAFF;
+    padding: 9px;
+  }
+  .pm-guidance-head,
+  .pm-guidance-record-top,
+  .pm-guidance-record-meta,
+  .pm-guidance-evidence-tags {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .pm-guidance-head {
+    justify-content: space-between;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #EFE7FF;
+  }
+  .pm-guidance-evidence-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .pm-guidance-evidence-card {
+    border: 1px solid #EEE7FA;
+    border-radius: 6px;
+    background: #FFFFFF;
+    padding: 8px;
+    min-width: 0;
+  }
+  .pm-guidance-evidence-card span,
+  .pm-guidance-record-meta {
+    color: #8F959E;
+    font-size: 11px;
+  }
+  .pm-guidance-evidence-card b {
+    display: block;
+    margin-top: 3px;
+    color: #1F2329;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .pm-guidance-form {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 9px;
+  }
+  .pm-guidance-checks {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .pm-guidance-checks label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    border: 1px solid #E5E6EB;
+    border-radius: 999px;
+    background: #FFFFFF;
+    padding: 0 9px;
+    color: #4E5969;
+    font-size: 12px;
+  }
+  .pm-guidance-textarea {
+    grid-column: 1 / 4;
+    min-height: 64px;
+    resize: vertical;
+  }
+  .pm-guidance-save {
+    min-height: 64px;
+    align-self: stretch;
+  }
+  .pm-guidance-record-list {
+    display: grid;
+    gap: 8px;
+  }
+  .pm-guidance-record {
+    border: 1px solid #EEE7FA;
+    border-radius: 6px;
+    background: #FFFFFF;
+    padding: 8px;
+  }
+  .pm-guidance-record-top {
+    justify-content: space-between;
+  }
+  .pm-guidance-record-top b {
+    color: #1F2329;
+    font-size: 12px;
+  }
+  .pm-guidance-record p {
+    margin: 6px 0;
+    color: #1F2329;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .pm-guidance-evidence-tags {
+    margin-top: 6px;
+  }
+  .pm-guidance-evidence-tags span {
+    border-radius: 999px;
+    background: #F4F3FF;
+    color: #5B21B6;
+    padding: 3px 7px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .pm-kv-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border-top: 1px solid #F0F2F5;
+    padding: 8px 0;
+    color: #1F2329;
+    font-size: 12px;
+  }
+  .pm-kv-line span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-kv-line b {
+    color: #3370FF;
+    white-space: nowrap;
   }
   .pm-name-cell {
     min-width: 0;
@@ -639,15 +2721,261 @@ const projectPanelStyles = `
     background: #FFF1F0;
   }
   .pm-inline-editor {
-    padding: 12px;
-    background: #F7F8FA;
+    padding: 14px;
+    background: #F4F6FA;
     border-bottom: 1px solid #E5E6EB;
+  }
+  .pm-detail-shell {
+    display: grid;
+    gap: 12px;
+  }
+  .pm-detail-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    background: #FFFFFF;
+    border: 1px solid #E1E6F0;
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .pm-detail-title {
+    color: #1F2329;
+    font-size: 16px;
+    font-weight: 850;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-detail-subtitle {
+    margin-top: 4px;
+    color: #646A73;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .pm-detail-badges {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .pm-detail-section {
+    background: #FFFFFF;
+    border: 1px solid #E1E6F0;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .pm-detail-section-head {
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 12px;
+    background: #FAFBFC;
+    border-bottom: 1px solid #E8EAED;
+  }
+  .pm-detail-section-title {
+    color: #1F2329;
+    font-size: 13px;
+    font-weight: 850;
+  }
+  .pm-detail-section-body {
+    padding: 12px;
+  }
+  .pm-approval-section {
+    border-color: #BACEFD;
+  }
+  .pm-approval-status-strip {
+    display: grid;
+    grid-template-columns: minmax(180px, 1.2fr) minmax(150px, 1fr) minmax(120px, 0.8fr) auto;
+    gap: 10px;
+    align-items: center;
+    border: 1px solid #D8E3FF;
+    border-radius: 7px;
+    background: #F7FAFF;
+    padding: 10px 12px;
+  }
+  .pm-approval-status-strip div {
+    min-width: 0;
+  }
+  .pm-approval-status-strip span:not(.pm-tag) {
+    display: block;
+    color: #646A73;
+    font-size: 12px;
+    margin-bottom: 3px;
+  }
+  .pm-approval-status-strip b {
+    display: block;
+    color: #1F2329;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-approval-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 220px;
+    gap: 14px;
+    align-items: stretch;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #E8EAED;
+  }
+  .pm-approval-kicker {
+    color: #3370FF;
+    font-size: 12px;
+    font-weight: 800;
+    margin-bottom: 4px;
+  }
+  .pm-approval-title {
+    color: #1F2329;
+    font-size: 20px;
+    line-height: 1.3;
+    font-weight: 900;
+  }
+  .pm-approval-desc {
+    margin-top: 8px;
+    color: #4E5969;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .pm-approval-current {
+    border: 1px solid #D8E3FF;
+    border-radius: 7px;
+    background: #F7FAFF;
+    padding: 12px;
+    display: grid;
+    gap: 7px;
+    align-content: start;
+  }
+  .pm-approval-current b {
+    color: #1F2329;
+    font-size: 16px;
+  }
+  .pm-approval-current span:not(.pm-tag) {
+    color: #646A73;
+    font-size: 12px;
+  }
+  .pm-approval-stepper {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(150px, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .pm-approval-step {
+    min-width: 150px;
+    border: 1px solid #E5E6EB;
+    border-radius: 7px;
+    background: #FFFFFF;
+    padding: 10px;
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .pm-approval-step[data-status="current"] {
+    border-color: #3370FF;
+    box-shadow: 0 8px 20px rgba(51,112,255,0.12);
+  }
+  .pm-approval-step-index {
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    background: #F2F3F5;
+    color: #646A73;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 850;
+  }
+  .pm-approval-step[data-status="done"] .pm-approval-step-index {
+    background: #DCFCE7;
+    color: #15803D;
+  }
+  .pm-approval-step[data-status="current"] .pm-approval-step-index {
+    background: #3370FF;
+    color: #FFFFFF;
+  }
+  .pm-approval-step-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .pm-approval-step-head b {
+    color: #1F2329;
+    font-size: 13px;
+  }
+  .pm-approval-step p {
+    margin: 6px 0 0;
+    color: #4E5969;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .pm-approval-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1.2fr);
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .pm-approval-card {
+    border: 1px solid #E8EAED;
+    border-radius: 7px;
+    background: #FAFBFC;
+    padding: 12px;
+  }
+  .pm-approval-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .pm-approval-fields div {
+    min-width: 0;
+    border-bottom: 1px solid #EEF0F4;
+    padding-bottom: 7px;
+  }
+  .pm-approval-fields span {
+    display: block;
+    color: #8F959E;
+    font-size: 12px;
+    margin-bottom: 3px;
+  }
+  .pm-approval-fields b {
+    display: block;
+    color: #1F2329;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .pm-approval-stage-list {
+    display: grid;
+    gap: 10px;
+  }
+  .pm-approval-stage-list b {
+    color: #1F2329;
+    font-size: 13px;
+  }
+  .pm-approval-stage-list p {
+    margin: 5px 0 0;
+    color: #4E5969;
+    font-size: 12px;
+    line-height: 1.65;
   }
   .pm-inline-grid {
     display: grid;
     grid-template-columns: minmax(260px, 1fr) 320px;
     gap: 12px;
     align-items: start;
+  }
+  .pm-detail-grid {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 0.92fr);
+    gap: 12px;
+    align-items: stretch;
   }
   .pm-inline-panel {
     background: #FFFFFF;
@@ -695,6 +3023,35 @@ const projectPanelStyles = `
     gap: 8px;
     margin-top: 10px;
   }
+  .pm-task-panel {
+    display: grid;
+    gap: 0;
+  }
+  .pm-task-table-head,
+  .pm-task-table-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 86px 86px minmax(120px, 0.55fr) 76px;
+    gap: 10px;
+    align-items: center;
+  }
+  .pm-task-table-head {
+    color: #646A73;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 8px 0;
+    border-bottom: 1px solid #E8EAED;
+  }
+  .pm-task-table-row {
+    min-height: 42px;
+    padding: 8px 0;
+    border-bottom: 1px solid #F2F3F5;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .pm-task-table-row:hover,
+  .pm-task-table-row[data-expanded="true"] {
+    background: #F7FAFF;
+  }
   .pm-task-group {
     border-bottom: 1px solid #E5E6EB;
   }
@@ -728,8 +3085,14 @@ const projectPanelStyles = `
       grid-template-columns: 1fr;
     }
     .pm-sidebar {
+      position: static;
+      height: auto;
+      overflow: visible;
       border-right: 0;
       border-bottom: 1px solid #E5E6EB;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
     }
     .pm-topbar {
       position: static;
@@ -752,14 +3115,61 @@ const projectPanelStyles = `
     .pm-tool-btn {
       flex: 1 1 120px;
     }
+    .pm-unified-search,
     .pm-search {
       width: 100%;
+    }
+    .pm-people-popover {
+      width: min(340px, calc(100vw - 24px));
     }
     .pm-select {
       width: 100%;
     }
     .pm-main {
       padding: 10px;
+    }
+    .pm-summary-grid {
+      grid-template-columns: 1fr;
+    }
+    .pm-status-overview-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .pm-detail-head {
+      grid-template-columns: 1fr;
+      align-items: start;
+    }
+    .pm-detail-badges {
+      justify-content: flex-start;
+    }
+    .pm-detail-grid {
+      grid-template-columns: 1fr;
+    }
+    .pm-approval-hero,
+    .pm-approval-status-strip,
+    .pm-approval-grid {
+      grid-template-columns: 1fr;
+    }
+    .pm-approval-stepper {
+      grid-template-columns: repeat(6, 180px);
+    }
+    .pm-approval-panel-grid,
+    .pm-approval-panel-split {
+      grid-template-columns: 1fr;
+    }
+    .pm-approval-material-row,
+    .pm-guidance-evidence-grid,
+    .pm-guidance-form {
+      grid-template-columns: 1fr;
+    }
+    .pm-guidance-textarea {
+      grid-column: 1;
+    }
+    .pm-task-panel {
+      overflow-x: auto;
+    }
+    .pm-task-table-head,
+    .pm-task-table-row {
+      min-width: 680px;
     }
     .pm-toolbar {
       align-items: stretch;
@@ -776,6 +3186,26 @@ const projectPanelStyles = `
       min-height: 420px;
       margin-top: 8px;
     }
+    .pm-view-switch {
+      width: 100%;
+    }
+    .pm-view-switch button {
+      flex: 1 1 92px;
+    }
+    .pm-board-grid {
+      grid-template-columns: repeat(4, 220px);
+    }
+    .pm-gantt-sheet {
+      min-width: 960px;
+    }
+    .pm-approval-board {
+      max-width: none;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+    .pm-approval-node-flow {
+      min-width: 520px;
+    }
     .pm-table {
       min-width: 820px;
     }
@@ -791,11 +3221,51 @@ const projectPanelStyles = `
     .pm-sidebar {
       padding: 8px;
     }
+    .pm-cockpit-grid {
+      grid-template-columns: 1fr;
+    }
+    .pm-identity-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .pm-cockpit-hero {
+      border-radius: 10px;
+      padding: 14px;
+    }
+    .pm-cockpit-title {
+      font-size: 19px;
+    }
+    .pm-brief-item {
+      grid-template-columns: 8px minmax(0, 1fr);
+    }
+    .pm-brief-item .pm-row-action {
+      grid-column: 2;
+      justify-self: start;
+    }
     .pm-sidebar-section {
-      margin-bottom: 10px;
+      margin-bottom: 0;
     }
     .pm-sidebar-section:nth-of-type(n+3) {
       display: none;
+    }
+  }
+  @media (max-width: 560px) {
+    .pm-breadcrumb {
+      display: none;
+    }
+    .pm-module-tabs {
+      width: 100%;
+    }
+    .pm-tab-btn {
+      flex: 1 1 0;
+    }
+    .pm-metric-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .pm-inline-fields {
+      grid-template-columns: 1fr;
+    }
+    .pm-approval-fields {
+      grid-template-columns: 1fr;
     }
   }
 `;
@@ -807,30 +3277,30 @@ const ProjectListPage = () => {
   const focusTimerRef = useRef<Record<number, number>>({});
   const memberOpenIdFilter = searchParams.get("member_open_id") || undefined;
   const [workMode, setWorkMode] = useState<WorkMode>("projects");
+  const [projectView, setProjectView] = useState<ProjectViewKey>("table");
   const [activeKey, setActiveKey] = useState<ProjectTabKey>("active");
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectHistory, setProjectHistory] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [historyTasks, setHistoryTasks] = useState<Task[]>([]);
-  const [aiAssistants, setAiAssistants] = useState<AIAssistantConfig[]>([]);
-  const [assistantConfigExpanded, setAssistantConfigExpanded] = useState(false);
-  const [savingAssistantId, setSavingAssistantId] = useState<number | "new" | null>(null);
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("open");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [projectTypeFilter, setProjectTypeFilter] = useState<"all" | ProjectType>("all");
   const [projectCategoryFilter, setProjectCategoryFilter] = useState<ProjectCategoryFilter>("all");
   const [query, setQuery] = useState("");
+  const [memberFilterOpenId, setMemberFilterOpenId] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [loading, setLoading] = useState(true);
   const [memberMap, setMemberMap] = useState<Record<string, Member>>({});
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null);
+  const [highlightProjectId, setHighlightProjectId] = useState<number | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
   const [expandedProjectTaskId, setExpandedProjectTaskId] = useState<number | null>(null);
   const [savingProjectId, setSavingProjectId] = useState<number | null>(null);
   const [savingProjectMemberKey, setSavingProjectMemberKey] = useState<string | null>(null);
   const [savingTaskId, setSavingTaskId] = useState<number | null>(null);
-  const [savingTodayTaskId, setSavingTodayTaskId] = useState<number | null>(null);
   const [generatingWorkflowId, setGeneratingWorkflowId] = useState<number | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Record<number, Project>>({});
   const [projectDetailLoadingId, setProjectDetailLoadingId] = useState<number | null>(null);
@@ -873,7 +3343,7 @@ const ProjectListPage = () => {
     priority: "medium" as ProjectPriority,
     project_type: "team" as ProjectType,
     department: "",
-    category: "all" as ProjectCategoryFilter,
+    category: "论文写作" as ProjectCategoryFilter,
     tags: "",
     start_date: "",
     target_end_date: "",
@@ -900,24 +3370,24 @@ const ProjectListPage = () => {
     knowledgeTitle: "",
   });
   const [workflowDraft, setWorkflowDraft] = useState({
-    template: "开发" as WorkflowTemplateKey,
+    template: "产品研发" as WorkflowTemplateKey,
     assignee_open_id: "",
     reviewer: "",
     customNodes: "",
   });
   const [projectMemberDrafts, setProjectMemberDrafts] = useState<Record<string, { role: PMRole; share_ratio: string; tags: string }>>({});
   const [projectMemberAddDrafts, setProjectMemberAddDrafts] = useState<Record<number, string>>({});
-  const [assistantDraft, setAssistantDraft] = useState({
-    assistant_id: 0,
-    scope: "global" as AIAssistantScope,
-    department: "",
-    name: "小卷管理助手",
-    role: "management",
-    prompt: "关注项目节奏、任务阻塞、知识沉淀和团队负载，输出可执行建议。",
-    workflow: "每日检查逾期/受阻任务；每周总结知识、会议、群聊和任务偏差。",
-    cadence: "weekly" as AIAssistantCadence,
-    enabled: true,
-  });
+  const [selectedApprovalStepKey, setSelectedApprovalStepKey] = useState<string | null>(null);
+  const [identityViewMode, setIdentityViewMode] = useState<"manager" | "employee">("manager");
+  const [guidanceDrafts, setGuidanceDrafts] = useState<Record<string, {
+    problemType: string;
+    evidence: string[];
+    target: string;
+    deadline: string;
+    suggestion: string;
+    status: GuidanceStatus;
+  }>>({});
+  const [guidanceExtraRecords, setGuidanceExtraRecords] = useState<Record<string, PaperGuidanceRecord[]>>({});
 
   useEffect(() => {
     return () => {
@@ -927,65 +3397,6 @@ const ProjectListPage = () => {
 
   const isManager = me?.role === "admin" || me?.role === "staff";
 
-  const loadAIAssistants = () => {
-    listAIAssistants()
-      .then((items) => setAiAssistants(items))
-      .catch(() => setAiAssistants([]));
-  };
-
-  const editAssistantDraft = (assistant: AIAssistantConfig) => {
-    setAssistantDraft({
-      assistant_id: assistant.assistant_id,
-      scope: assistant.scope,
-      department: assistant.department || "",
-      name: assistant.name,
-      role: assistant.role,
-      prompt: assistant.prompt,
-      workflow: assistant.workflow || "",
-      cadence: assistant.cadence,
-      enabled: assistant.enabled,
-    });
-  };
-
-  const saveAssistantDraft = async () => {
-    const name = assistantDraft.name.trim();
-    const prompt = assistantDraft.prompt.trim();
-    if (!name || !prompt) {
-      Toast.show({ icon: "fail", content: "请填写助手名称和提示词" });
-      return;
-    }
-    if (assistantDraft.scope === "department" && !assistantDraft.department.trim()) {
-      Toast.show({ icon: "fail", content: "部门助手需要选择部门" });
-      return;
-    }
-    const payload = {
-      scope: assistantDraft.scope,
-      department: assistantDraft.scope === "department" ? assistantDraft.department.trim() : null,
-      name,
-      role: assistantDraft.role.trim() || "management",
-      prompt,
-      workflow: assistantDraft.workflow.trim() || null,
-      cadence: assistantDraft.cadence,
-      enabled: assistantDraft.enabled,
-    };
-    setSavingAssistantId(assistantDraft.assistant_id ? assistantDraft.assistant_id : "new");
-    try {
-      const saved = assistantDraft.assistant_id
-        ? await updateAIAssistant(assistantDraft.assistant_id, payload)
-        : await createAIAssistant(payload);
-      setAiAssistants((prev) => {
-        const exists = prev.some((item) => item.assistant_id === saved.assistant_id);
-        return exists ? prev.map((item) => (item.assistant_id === saved.assistant_id ? saved : item)) : [saved, ...prev];
-      });
-      editAssistantDraft(saved);
-      Toast.show({ icon: "success", content: "AI 助手配置已保存" });
-    } catch {
-      Toast.show({ icon: "fail", content: "AI 助手保存失败" });
-    } finally {
-      setSavingAssistantId(null);
-    }
-  };
-
   const canDeleteProject = (project: Project): boolean => {
     if (!me) return false;
     return (
@@ -993,6 +3404,29 @@ const ProjectListPage = () => {
       || (equalAccessOpenIds.has(me.open_id) && equalAccessOpenIds.has(project.owner_open_id))
       || (project.project_type === "team" && isManager)
     );
+  };
+
+  const scrollProjectIntoView = (project: Project) => {
+    setWorkMode("projects");
+    if (project.status === "planning") {
+      setActiveKey("planning");
+    } else if (project.status === "completed") {
+      setActiveKey("completed");
+    } else if (project.status === "archived") {
+      setActiveKey("archived");
+    } else {
+      setActiveKey("active");
+    }
+    setHighlightProjectId(project.project_id);
+    window.setTimeout(() => {
+      document.getElementById(`project-card-${project.project_id}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 80);
+    window.setTimeout(() => {
+      setHighlightProjectId((current) => (current === project.project_id ? null : current));
+    }, 1800);
   };
 
   const canDeleteTask = (task: Task): boolean => {
@@ -1430,11 +3864,24 @@ const ProjectListPage = () => {
     });
     setWorkflowDraft((prev) => ({
       ...prev,
-      template: category === "all" ? "开发" : category,
+      template: category === "all" ? "产品研发" : category,
       assignee_open_id: project.owner_open_id || "",
       reviewer: memberMap[project.owner_open_id]?.name || "项目负责人审核",
-      customNodes: defaultWorkflowText(category === "all" ? "开发" : category),
+      customNodes: defaultWorkflowText(category === "all" ? "产品研发" : category),
     }));
+    const isSampleProject = project.project_id < 0;
+    if (isSampleProject) {
+      const detailTasks = sampleTasks.filter((task) => task.project_id === project.project_id);
+      setExpandedProjects((prev) => ({ ...prev, [project.project_id]: project }));
+      setProjectTasks((prev) => ({ ...prev, [project.project_id]: detailTasks }));
+      setProjectRelations((prev) => ({ ...prev, [project.project_id]: [] }));
+      setProjectLogs((prev) => ({ ...prev, [project.project_id]: [] }));
+      setProjectKnowledge((prev) => ({ ...prev, [project.project_id]: [] }));
+      setProjectMeetings((prev) => ({ ...prev, [project.project_id]: [] }));
+      setProjectCalendarEvents((prev) => ({ ...prev, [project.project_id]: [] }));
+      setProjectMemberDraftFromDetail(project.project_id, project.members || []);
+      return;
+    }
     if (!expandedProjects[project.project_id]) {
       setProjectDetailLoadingId(project.project_id);
       Promise.all([
@@ -1642,23 +4089,6 @@ const ProjectListPage = () => {
     }
   };
 
-  const toggleTaskTodayTodo = async (task: Task, enabled: boolean) => {
-    setSavingTodayTaskId(task.task_id);
-    try {
-      const updated = await markTaskTodayTodo(task.task_id, enabled);
-      if (workMode === "today" && !enabled) {
-        setTasks((prev) => prev.filter((item) => item.task_id !== task.task_id));
-      } else {
-        applyTaskUpdate(updated);
-      }
-      Toast.show({ icon: "success", content: enabled ? "已加入今日待办" : "已移出今日待办" });
-    } catch {
-      Toast.show({ icon: "fail", content: "今日待办更新失败" });
-    } finally {
-      setSavingTodayTaskId(null);
-    }
-  };
-
   const parseWorkflowNodes = () => {
     const source = workflowDraft.customNodes.trim()
       || (workflowDraft.template === "自定义" ? "" : defaultWorkflowText(workflowDraft.template));
@@ -1743,7 +4173,7 @@ const ProjectListPage = () => {
             `预计耗时: ${formatMinutes(node.hours * 60)}`,
             `审核要求: ${node.review}`,
             `审核人/说明: ${reviewer}`,
-            "完成后请补充复盘、知识沉淀或可复用材料。",
+            "完成后请补充复盘和下一步计划。",
           ].join("\n"),
         });
         createdTasks.push(task);
@@ -1829,86 +4259,6 @@ const ProjectListPage = () => {
     }
   };
 
-  const finishTaskWork = async (task: Task) => {
-    const session = focusSessions[task.task_id];
-    const expectedMinutes = session?.expectedMinutes || Math.max(1, Number(focusDraft.expectedMinutes) || 60);
-    const actualMinutes = focusDraft.actualMinutes.trim()
-      ? Math.max(0, Number(focusDraft.actualMinutes) || 0)
-      : session
-        ? Math.max(1, Math.round((Date.now() - new Date(session.startedAt).getTime()) / 60000))
-        : expectedMinutes;
-    const goalText = focusDraft.goalAchieved === "yes" ? "已达到" : focusDraft.goalAchieved === "partly" ? "部分达到" : "未达到";
-    const delta = actualMinutes - expectedMinutes;
-    const note = [
-      `目标达成: ${goalText}`,
-      `预计耗时: ${formatMinutes(expectedMinutes)}`,
-      `实际耗时: ${formatMinutes(actualMinutes)}`,
-      `偏差: ${delta >= 0 ? "+" : ""}${formatMinutes(Math.abs(delta))}`,
-      `结束复盘/灵感: ${focusDraft.finishReflection.trim() || "未填写"}`,
-    ].join("\n");
-    setSavingFocusId(task.task_id);
-    let knowledgeCreated = false;
-    try {
-      await stopTaskFocus(task.task_id, { elapsed_seconds: actualMinutes * 60, note });
-      if (focusDraft.saveAsKnowledge && me?.open_id) {
-        try {
-          const knowledge = await createContribution({
-            member_open_id: me.open_id,
-            type: "document",
-            title: focusDraft.knowledgeTitle.trim() || `任务复盘：${task.title}`,
-            description: [
-              `关联项目: ${task.project_name || task.project_id || "独立任务"}`,
-              `关联任务: #${task.task_id} ${task.title}`,
-              note,
-            ].join("\n"),
-            occurred_at: new Date().toISOString().slice(0, 10),
-            role_in_contribution: "contributor",
-            hours: actualMinutes > 0 ? Number((actualMinutes / 60).toFixed(2)) : null,
-            score: null,
-            proof_url: null,
-            tags: [
-              "任务知识",
-              task.project_id ? `project:${task.project_id}` : "project:none",
-              `task:${task.task_id}`,
-            ].join(" "),
-          });
-          if (task.project_id) {
-            setProjectKnowledge((prev) => ({
-              ...prev,
-              [task.project_id as number]: [knowledge, ...(prev[task.project_id as number] || [])],
-            }));
-          }
-          knowledgeCreated = true;
-        } catch {
-          Toast.show({ icon: "fail", content: "任务已结束，知识文档同步失败" });
-        }
-      }
-      const updated = await updateTask(task.task_id, {
-        status: "done",
-        progress_draft: [
-          task.progress_draft || taskDraft.progress_draft || "",
-          focusDraft.finishReflection.trim() ? `完成复盘: ${focusDraft.finishReflection.trim()}` : "",
-        ].filter(Boolean).join("\n"),
-      });
-      applyTaskUpdate(updated);
-      if (focusTimerRef.current[task.task_id]) {
-        window.clearTimeout(focusTimerRef.current[task.task_id]);
-        delete focusTimerRef.current[task.task_id];
-      }
-      setFocusSessions((prev) => {
-        const next = { ...prev };
-        delete next[task.task_id];
-        return next;
-      });
-      loadTaskLogs(task.task_id);
-      loadTaskFocusSummary(task.task_id);
-      Toast.show({ icon: "success", content: knowledgeCreated ? "任务已结束，知识文档已生成" : "任务已结束并记录评估" });
-    } catch {
-      Toast.show({ icon: "fail", content: "结束任务失败" });
-    } finally {
-      setSavingFocusId(null);
-    }
-  };
 
   const handleDeleteProject = (project: Project) => {
     Dialog.confirm({
@@ -1923,7 +4273,13 @@ const ProjectListPage = () => {
           setProjects((prev) => prev.filter((item) => item.project_id !== project.project_id));
           Toast.show({ icon: "success", content: "已删除" });
         } catch (err) {
-          const msg = (err as { response?: { status?: number } })?.response?.status === 403 ? "无权删除该项目" : "删除失败";
+          const status = (err as { response?: { status?: number } })?.response?.status;
+          if (status === 404) {
+            setProjects((prev) => prev.filter((item) => item.project_id !== project.project_id));
+            Toast.show({ icon: "fail", content: "项目不存在，已从列表移除" });
+            return;
+          }
+          const msg = status === 403 ? "无权删除该项目" : "删除失败";
           Toast.show({ icon: "fail", content: msg });
         } finally {
           setDeletingId(null);
@@ -1957,26 +4313,27 @@ const ProjectListPage = () => {
   useEffect(() => {
     fetchAllMembers()
       .then((members) => {
-        setMemberMap(members.reduce<Record<string, Member>>((acc, member) => {
+        setMemberMap([...sampleMembers, ...members].reduce<Record<string, Member>>((acc, member) => {
           acc[member.open_id] = member;
           return acc;
         }, {}));
       })
-      .catch(() => setMemberMap({}));
-  }, []);
-
-  useEffect(() => {
-    loadAIAssistants();
+      .catch(() => {
+        setMemberMap(sampleMembers.reduce<Record<string, Member>>((acc, member) => {
+          acc[member.open_id] = member;
+          return acc;
+        }, {}));
+      });
   }, []);
 
   useEffect(() => {
     let active = true;
     listTasks({ page_size: 500 })
       .then((page) => {
-        if (active) setHistoryTasks(page.items);
+        if (active) setHistoryTasks(page.items.length ? page.items : (shouldUseDemoData ? sampleTasks : []));
       })
       .catch(() => {
-        if (active) setHistoryTasks([]);
+        if (active) setHistoryTasks(shouldUseDemoData ? sampleTasks : []);
       });
     return () => {
       active = false;
@@ -1994,8 +4351,9 @@ const ProjectListPage = () => {
     ).then((responses) => {
       if (!active) return;
       const seen = new Set<number>();
+      const items = responses.flatMap((response) => response.items);
       setProjectHistory(
-        responses.flatMap((response) => response.items)
+        mergePinnedSamples(items, sampleProjects)
           .filter((project) => seen.has(project.project_id) ? false : (seen.add(project.project_id), true)),
       );
     });
@@ -2019,7 +4377,15 @@ const ProjectListPage = () => {
       .then((responses) => {
         if (!active) return;
         const seen = new Set<number>();
-        const unique = responses.flatMap((response) => response.items)
+        const responseItems = responses.flatMap((response) => response.items);
+        const fallbackItems = shouldUseDemoData
+          ? sampleProjects.filter((project) =>
+            statusesForTab[activeKey].includes(project.status)
+            && (projectTypeFilter === "all" || project.project_type === projectTypeFilter)
+            && projectMatchesMember(project, memberOpenIdFilter),
+          )
+          : [];
+        const unique = mergePinnedSamples(responseItems, fallbackItems)
           .filter((project) => seen.has(project.project_id) ? false : (seen.add(project.project_id), true))
           .sort((left, right) => (right.updated_at || "").localeCompare(left.updated_at || ""));
         setProjects(unique);
@@ -2033,12 +4399,10 @@ const ProjectListPage = () => {
   }, [activeKey, isManager, memberOpenIdFilter, projectTypeFilter, workMode]);
 
   useEffect(() => {
-    if (workMode !== "tasks" && workMode !== "today") return undefined;
+    if (workMode !== "tasks") return undefined;
     let active = true;
     setLoading(true);
-    const request = workMode === "today"
-      ? listTodayTasks().then((items) => [{ items, total: items.length, page: 1, page_size: items.length }])
-      : Promise.all((taskFilter === "open"
+    const request = Promise.all((taskFilter === "open"
         ? ["todo", "in_progress", "blocked"] as TaskStatus[]
         : taskFilter === "all"
           ? []
@@ -2052,7 +4416,19 @@ const ProjectListPage = () => {
     request.then((responses) => {
         if (!active) return;
         const seen = new Set<number>();
-        const unique = responses.flatMap((response) => response.items)
+        const requestedStatuses = taskFilter === "open"
+          ? ["todo", "in_progress", "blocked"] as TaskStatus[]
+          : taskFilter === "all"
+            ? []
+            : [taskFilter as TaskStatus];
+        const responseItems = responses.flatMap((response) => response.items);
+        const fallbackItems = shouldUseDemoData
+          ? sampleTasks.filter((task) =>
+            (requestedStatuses.length === 0 || requestedStatuses.includes(task.status))
+            && taskMatchesMember(task, memberOpenIdFilter),
+          )
+          : [];
+        const unique = mergePinnedTasks(responseItems, fallbackItems)
           .filter((task) => seen.has(task.task_id) ? false : (seen.add(task.task_id), true))
           .sort((left, right) => {
             const dueCompare = (left.due_date || "9999").localeCompare(right.due_date || "9999");
@@ -2078,15 +4454,33 @@ const ProjectListPage = () => {
   };
 
   const queryText = query.trim().toLowerCase();
+  const textQuery = memberFilterOpenId ? "" : queryText;
+  const peopleSuggestions = useMemo(() => {
+    if (!queryText || memberFilterOpenId) return [];
+    return Object.values(memberMap)
+      .filter((member) => member.status !== "left")
+      .filter((member) => {
+        const haystack = `${member.name || ""} ${member.department || ""} ${member.position || ""} ${member.title || ""} ${member.email || ""} ${member.mobile || ""}`.toLowerCase();
+        return haystack.includes(queryText);
+      })
+      .sort((left, right) => (left.name || "").localeCompare(right.name || "", "zh-Hans-CN"))
+      .slice(0, 8);
+  }, [memberFilterOpenId, memberMap, queryText]);
 
   const filteredProjects = useMemo(() => {
     return projects
       .filter((project) => projectCategoryFilter === "all" || getProjectCategory(project) === projectCategoryFilter)
       .filter((project) => {
-        if (!queryText) return true;
-        return `${project.name} ${project.description || ""} ${project.department || ""} ${project.tags || ""}`.toLowerCase().includes(queryText);
+        if (!memberFilterOpenId) return true;
+        return project.owner_open_id === memberFilterOpenId
+          || project.created_by === memberFilterOpenId
+          || (project.members || []).some((member) => member.member_open_id === memberFilterOpenId);
+      })
+      .filter((project) => {
+        if (!textQuery) return true;
+        return `${project.name} ${project.description || ""} ${project.department || ""} ${project.tags || ""}`.toLowerCase().includes(textQuery);
       });
-  }, [projectCategoryFilter, projects, queryText]);
+  }, [memberFilterOpenId, projectCategoryFilter, projects, textQuery]);
 
   const taskAssigneeOptions = useMemo(() => {
     const ids = Array.from(new Set(tasks.map((task) => task.assignee_open_id).filter((id): id is string => Boolean(id))));
@@ -2114,10 +4508,14 @@ const ProjectListPage = () => {
     return tasks
       .filter((task) => assigneeFilter === "all" || (assigneeFilter === "__unassigned__" ? !task.assignee_open_id : task.assignee_open_id === assigneeFilter))
       .filter((task) => {
-        if (!queryText) return true;
-        return `${task.title} ${task.description || ""} ${task.project_name || ""}`.toLowerCase().includes(queryText);
+        if (!memberFilterOpenId) return true;
+        return task.assignee_open_id === memberFilterOpenId || task.created_by === memberFilterOpenId;
+      })
+      .filter((task) => {
+        if (!textQuery) return true;
+        return `${task.title} ${task.description || ""} ${task.project_name || ""}`.toLowerCase().includes(textQuery);
       });
-  }, [assigneeFilter, queryText, tasks]);
+  }, [assigneeFilter, memberFilterOpenId, tasks, textQuery]);
 
   const taskGroups = useMemo(() => {
     if (!isManager) return [{ key: "all", title: "我的任务", subtitle: "", tasks: filteredTasks }];
@@ -2145,10 +4543,17 @@ const ProjectListPage = () => {
       });
   }, [filteredTasks, isManager, memberMap]);
 
-  const projectDoneCount = filteredProjects.filter((project) => project.status === "completed").length;
-  const totalProjectTasks = filteredProjects.reduce((sum, project) => sum + project.task_count, 0);
-  const doneProjectTasks = filteredProjects.reduce((sum, project) => sum + project.task_done_count, 0);
-  const sidebarProgress = totalProjectTasks ? Math.round((doneProjectTasks / totalProjectTasks) * 100) : 0;
+  const planningProjects = filteredProjects.filter((project) => project.status === "planning");
+  const activeProjects = filteredProjects.filter((project) => project.status === "active");
+  const completedProjects = filteredProjects.filter((project) => project.status === "completed");
+  const archivedProjects = filteredProjects.filter((project) => project.status === "archived");
+  const projectStatusOverview = [
+    { key: "all", label: "全部项目", projects: filteredProjects, tone: { bg: "#E8F3FF", fg: "#1D4ED8" } },
+    { key: "planning", label: "筹备中", projects: planningProjects, tone: projectStatusStyle.planning },
+    { key: "active", label: "进行中", projects: activeProjects, tone: projectStatusStyle.active },
+    { key: "completed", label: "已完成", projects: completedProjects, tone: projectStatusStyle.completed },
+    { key: "archived", label: "已归档", projects: archivedProjects, tone: projectStatusStyle.archived },
+  ];
   const nowMs = Date.now();
   const todayEnd = new Date();
   todayEnd.setHours(23, 59, 59, 999);
@@ -2159,44 +4564,63 @@ const ProjectListPage = () => {
   const dueThisWeekTasks = openFilteredTasks.filter((task) => task.due_date && new Date(task.due_date).getTime() <= weekEnd.getTime());
   const overdueFilteredTasks = openFilteredTasks.filter((task) => task.due_date && new Date(task.due_date).getTime() < nowMs);
   const blockedFilteredTasks = openFilteredTasks.filter((task) => task.status === "blocked");
-  const missingThinkingTasks = openFilteredTasks.filter((task) => !(task.thinking || "").trim());
-  const todayCompletedTasks = filteredTasks.filter((task) => task.status === "done");
-  const todayThinkingLines = filteredTasks
-    .map((task) => (task.thinking || "").trim())
-    .filter(Boolean)
-    .slice(0, 6);
-  const todayCompletionLines = filteredTasks
-    .map((task) => (task.progress_draft || "").trim())
-    .filter(Boolean)
-    .slice(0, 6);
-  const todayDeviationRows = filteredTasks
-    .map((task) => {
-      if (!task.planned_start_date || !task.due_date) return null;
-      const plannedMs = new Date(task.due_date).getTime() - new Date(task.planned_start_date).getTime();
-      const actualSeconds = focusSummaries[task.task_id] || 0;
-      if (!Number.isFinite(plannedMs) || plannedMs <= 0 || actualSeconds <= 0) return null;
-      const plannedSeconds = plannedMs / 1000;
-      return Math.abs(actualSeconds - plannedSeconds) / plannedSeconds;
-    })
-    .filter((value): value is number => value !== null);
-  const todayDeviationRate = todayDeviationRows.length
-    ? Math.round((todayDeviationRows.reduce((sum, value) => sum + value, 0) / todayDeviationRows.length) * 100)
-    : 0;
-  const overloadedAssignees = taskGroups.filter((group) => group.tasks.filter((task) => !["done", "cancelled"].includes(task.status)).length >= 5);
-  const abnormalProjects = filteredProjects.filter((project) => project.is_abnormal);
-  const stalledProjects = filteredProjects.filter((project) => project.status === "active" && project.task_count > 0 && project.task_done_count === 0);
-  const managerInsights = workMode === "tasks"
-    ? [
-        overdueFilteredTasks.length > 0 ? `有 ${overdueFilteredTasks.length} 个任务已逾期，建议优先拉齐负责人和截止口径。` : "当前任务视图没有逾期项，节奏基本可控。",
-        blockedFilteredTasks.length > 0 ? `有 ${blockedFilteredTasks.length} 个任务受阻，适合安排短会快速清障。` : "没有受阻任务，暂不需要专门清障会议。",
-        overloadedAssignees.length > 0 ? `${overloadedAssignees.slice(0, 2).map((group) => group.title).join("、")} 任务负载偏高，建议拆分或转派。` : "负责人负载未出现明显集中。",
-      ]
-    : [
-        abnormalProjects.length > 0 ? `有 ${abnormalProjects.length} 个异常项目，需要确认原因和负责人。` : "当前项目列表没有异常标记。",
-        stalledProjects.length > 0 ? `有 ${stalledProjects.length} 个进行中项目尚无完成任务，建议检查拆解是否过粗。` : "进行中项目已有任务推进痕迹。",
-        sidebarProgress < 35 && totalProjectTasks > 0 ? "整体任务完成率偏低，建议优先推进关键路径任务。" : "整体完成率处于可观察区间。",
-      ];
-
+  const staleProjects = filteredProjects.filter((project) => project.is_abnormal);
+  const categoryHealth = projectCategoryValues.map((category) => {
+    const categoryProjects = filteredProjects.filter((project) => getProjectCategory(project) === category);
+    const activeCount = categoryProjects.filter((project) => project.status === "active").length;
+    const score = categoryProjects.length ? Math.round((activeCount / categoryProjects.length) * 100) : 0;
+    return {
+      category,
+      count: categoryProjects.length,
+      score,
+      color: score >= 75 ? "#34C759" : score >= 45 ? "#FF9F0A" : "#F5483B",
+    };
+  });
+  const cockpitBriefs = [
+    ...overdueFilteredTasks.slice(0, 2).map((task) => ({
+      tone: "#F5483B",
+      label: "逾期",
+      title: task.title,
+      desc: `${task.project_name || "未关联项目"} · 截止 ${formatShortDate(task.due_date)}`,
+    })),
+    ...blockedFilteredTasks.slice(0, 2).map((task) => ({
+      tone: "#F5483B",
+      label: "受阻",
+      title: task.title,
+      desc: task.progress_draft || task.description || "需要负责人补充卡点说明",
+    })),
+    ...staleProjects.slice(0, 2).map((project) => ({
+      tone: "#FF9F0A",
+      label: "沉寂",
+      title: project.name,
+      desc: project.abnormal_reason || "群聊或项目动态需要关注",
+    })),
+  ].slice(0, 5);
+  const viewRoleLabel = identityViewMode === "manager" ? (me?.role === "teacher" ? "指导者" : "管理员") : "员工";
+  const memberStatusLabel = me?.status === "active" ? "在用" : me?.status === "on_leave" ? "暂离" : me?.status === "graduated" ? "已毕业" : me?.status === "left" ? "已离开" : "未知";
+  const projectTimelineRows = filteredProjects.map((project) => {
+    const start = project.start_date ? new Date(project.start_date).getTime() : new Date(project.created_at || nowIso).getTime();
+    const end = project.actual_end_date || project.target_end_date || project.updated_at || nowIso;
+    const endMs = Math.max(start + 86400000, new Date(end).getTime());
+    return { project, start, end: endMs };
+  });
+  const rawTimelineStart = projectTimelineRows.length ? Math.min(...projectTimelineRows.map((item) => item.start)) : Date.now();
+  const rawTimelineEnd = projectTimelineRows.length ? Math.max(...projectTimelineRows.map((item) => item.end)) : Date.now() + 86400000;
+  const timelineStartDate = new Date(rawTimelineStart);
+  timelineStartDate.setHours(0, 0, 0, 0);
+  const timelineEndDate = new Date(rawTimelineEnd);
+  timelineEndDate.setHours(23, 59, 59, 999);
+  const timelineStart = timelineStartDate.getTime();
+  const timelineEnd = timelineEndDate.getTime();
+  const timelineSpan = Math.max(86400000, timelineEnd - timelineStart);
+  const ganttDayCount = Math.max(1, Math.ceil(timelineSpan / 86400000));
+  const ganttDays = Array.from({ length: ganttDayCount }, (_, index) => {
+    const date = new Date(timelineStart + index * 86400000);
+    return {
+      key: date.toISOString().slice(0, 10),
+      label: `${date.getMonth() + 1}/${date.getDate()}`,
+    };
+  });
   const renderTag = (label: string, tone: { bg: string; fg: string }) => (
     <span className="pm-tag" style={{ background: tone.bg, color: tone.fg }}>{label}</span>
   );
@@ -2226,917 +4650,408 @@ const ProjectListPage = () => {
     );
   };
 
-  const renderTaskFocusPanel = (task: Task, canEdit: boolean) => {
-	    const session = focusSessions[task.task_id];
-	    const totalMinutes = Math.round((focusSummaries[task.task_id] || 0) / 60);
-	    const recommendations = getTaskRecommendations(task);
-	    const finishExpanded = Boolean(expandedFinishTaskIds[task.task_id]);
-	    return (
-	      <div style={{ marginTop: 10, borderTop: "1px solid #F2F3F5", paddingTop: 10 }}>
-	        <div style={{ marginBottom: 10, background: "#FAFAFA", border: "1px solid #E8EAED", borderRadius: 6, padding: 8 }}>
-          <div className="pm-section-title" style={{ marginBottom: 6 }}>相似历史任务</div>
-          {recommendations.length ? (
-            <div style={{ display: "grid", gap: 6 }}>
-              {recommendations.map(({ task: item, sharedTokens }) => {
-                const itemMinutes = Math.round((focusSummaries[item.task_id] || 0) / 60);
-                return (
-                  <div key={item.task_id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", borderTop: "1px solid #F2F3F5", paddingTop: 6 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 750, color: "#1F2329", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</div>
-                      <div className="pm-muted" style={{ marginTop: 3 }}>
-                        {item.project_name || "独立任务"} · {item.assignee_open_id ? memberMap[item.assignee_open_id]?.name || item.assignee_open_id : "未分配"}
-                        {sharedTokens.length ? ` · 共同关键词 ${sharedTokens.slice(0, 3).join("、")}` : ""}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-                      {renderTag(taskStatusStyle[item.status].label, taskStatusStyle[item.status])}
-                      <span className="pm-muted">{itemMinutes ? formatMinutes(itemMinutes) : formatDate(item.completed_at || item.updated_at)}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="pm-muted">暂无可推荐的相似历史任务。后续完成任务并沉淀知识后，这里会自动出现参考项。</div>
-          )}
+  const renderPaperApprovalInline = (snapshot: PaperApprovalSnapshot) => {
+    const progress = getPaperApprovalProgress(snapshot);
+    return (
+      <div className="pm-approval-inline">
+        <div className="pm-sidebar-metric-row" style={{ marginBottom: 4 }}>
+          <span>{snapshot.currentNode}</span>
+          <span>{progress}%</span>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 10, alignItems: "start" }}>
-          <div style={{ background: "#FFFFFF", border: "1px solid #F2F3F5", borderRadius: 6, padding: 8 }}>
-            <div className="pm-section-title" style={{ marginBottom: 6 }}>启动前</div>
-            <div className="pm-inline-fields">
-              <div>
-                <div className="pm-inline-label">预计时长</div>
-                <input className="pm-inline-field" type="number" min="1" value={focusDraft.expectedMinutes} disabled={!canEdit || savingFocusId === task.task_id} onChange={(event) => setFocusDraft((prev) => ({ ...prev, expectedMinutes: event.target.value }))} />
-              </div>
-              <div>
-                <div className="pm-inline-label">提醒时间</div>
-                <input className="pm-inline-field" type="number" min="1" value={focusDraft.reminderMinutes} disabled={!canEdit || savingFocusId === task.task_id} onChange={(event) => setFocusDraft((prev) => ({ ...prev, reminderMinutes: event.target.value }))} />
-              </div>
-            </div>
-            <div className="pm-inline-label" style={{ marginTop: 10 }}>启动思路</div>
-            <textarea className="pm-inline-field pm-inline-textarea" value={focusDraft.startThinking} disabled={!canEdit || savingFocusId === task.task_id} placeholder="准备怎么做、先验证什么、需要谁配合" onChange={(event) => {
-              const value = event.target.value;
-              setFocusDraft((prev) => ({ ...prev, startThinking: value }));
-              setTaskDraft((prev) => ({ ...prev, thinking: value }));
-            }} />
-            <div className="pm-inline-actions">
-              {canEdit ? (
-                <button className="pm-primary-btn" type="button" disabled={savingFocusId === task.task_id} onClick={() => void startTaskWork(task)}>
-                  {session ? "重新启动计时" : "开始任务"}
-                </button>
-              ) : null}
-              <span className="pm-muted">
-                默认 1 小时{totalMinutes ? ` · 历史实际 ${formatMinutes(totalMinutes)}` : ""}{session ? ` · 本次开始 ${formatDate(session.startedAt)}` : ""}
-              </span>
-            </div>
-          </div>
+        <div className="pm-progress pm-approval-progress"><span style={{ width: `${progress}%` }} /></div>
+        <div className="pm-approval-inline-sub">待 {snapshot.currentApprover} 审批</div>
+      </div>
+    );
+  };
 
-	          <div style={{ background: "#FAFAFA", border: "1px solid #F2F3F5", borderRadius: 6, padding: 8 }}>
-	            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-	              <div className="pm-section-title">完成后</div>
-	              <button className="pm-row-action" type="button" onClick={() => setExpandedFinishTaskIds((prev) => ({ ...prev, [task.task_id]: !prev[task.task_id] }))}>
-	                {finishExpanded ? "收起" : "展开"}
-	              </button>
-	            </div>
-	            {finishExpanded ? (
-	              <>
-	            <div className="pm-inline-fields">
-              <div>
-                <div className="pm-inline-label">实际耗时</div>
-                <input className="pm-inline-field" type="number" min="0" value={focusDraft.actualMinutes} disabled={!canEdit || savingFocusId === task.task_id} placeholder={session ? "留空则按计时计算" : "分钟"} onChange={(event) => setFocusDraft((prev) => ({ ...prev, actualMinutes: event.target.value }))} />
+  const approvalStepKey = (projectId: number, index: number) => `${projectId}:${index}`;
+
+  const defaultGuidanceDraft = (step: PaperApprovalStep) => ({
+    problemType: "执行记录缺失",
+    evidence: ["日报", "项目群聊"],
+    target: step.executor || snapshotApplicantName(step) || "",
+    deadline: "2026-06-24",
+    suggestion: "",
+    status: "pending" as GuidanceStatus,
+  });
+
+  const snapshotApplicantName = (step: PaperApprovalStep) => step.executor || step.approver || "";
+
+  const updateGuidanceDraft = (
+    key: string,
+    step: PaperApprovalStep,
+    patch: Partial<{
+      problemType: string;
+      evidence: string[];
+      target: string;
+      deadline: string;
+      suggestion: string;
+      status: GuidanceStatus;
+    }>,
+  ) => {
+    setGuidanceDrafts((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] || defaultGuidanceDraft(step)), ...patch },
+    }));
+  };
+
+  const saveGuidanceRecord = (key: string, step: PaperApprovalStep) => {
+    const draft = guidanceDrafts[key] || defaultGuidanceDraft(step);
+    if (!draft.suggestion.trim()) {
+      Toast.show({ content: "请先填写过程记录" });
+      return;
+    }
+    const record: PaperGuidanceRecord = {
+      id: `local-${Date.now()}`,
+      problemType: draft.problemType,
+      evidence: draft.evidence,
+      target: draft.target || step.executor || "待定",
+      deadline: draft.deadline,
+      status: draft.status,
+      suggestion: draft.suggestion.trim(),
+      createdBy: "当前管理者",
+      createdAt: new Date().toISOString(),
+    };
+    setGuidanceExtraRecords((prev) => ({ ...prev, [key]: [record, ...(prev[key] || [])] }));
+    setGuidanceDrafts((prev) => ({ ...prev, [key]: { ...defaultGuidanceDraft(step), suggestion: "" } }));
+    Toast.show({ content: "已添加过程记录（前端演示）" });
+  };
+
+  const renderApprovalStepPanel = (project: Project, snapshot: PaperApprovalSnapshot) => {
+    const projectId = project.project_id;
+    if (!selectedApprovalStepKey?.startsWith(`${projectId}:`)) return null;
+    const selectedIndex = Number(selectedApprovalStepKey.split(":")[1]);
+    const stepIndex = selectedIndex >= 0 ? selectedIndex : 0;
+    const step = snapshot.steps[stepIndex];
+    const panelKey = approvalStepKey(projectId, stepIndex);
+    const guidanceRecords = [...(guidanceExtraRecords[panelKey] || []), ...(step.guidance || [])];
+    const knownProjectTasks = [
+      ...tasks,
+      ...(projectTasks[projectId] || []),
+    ].filter((task, index, list) => task.project_id === projectId && list.findIndex((item) => item.task_id === task.task_id) === index);
+    const employeeProjectTasks = knownProjectTasks.filter((task) => task.created_by === me?.open_id || task.assignee_open_id === me?.open_id);
+    return (
+      <div className="pm-approval-node-panel">
+        <div className="pm-approval-panel-head">
+          <div>
+            <div className="pm-approval-panel-title">{stepIndex + 1}. {step.title}</div>
+            <div className="pm-muted">{step.group} · {step.status === "done" ? "已完成" : step.status === "current" ? "进行中" : "待流转"}</div>
+          </div>
+          <div className="pm-approval-panel-actions">
+            <div className="pm-muted">{identityViewMode === "employee" ? "员工视角：提交材料和查看自己的任务" : "管理员/指导者视角：查看过程记录"}</div>
+            {renderTag(step.status === "done" ? "已完成" : step.status === "current" ? "进行中" : "待流转", step.status === "done" ? { bg: "#E8FFEA", fg: "#15803D" } : step.status === "current" ? { bg: "#E8F3FF", fg: "#1D4ED8" } : { bg: "#F2F3F5", fg: "#646A73" })}
+          </div>
+        </div>
+        <div className="pm-approval-panel-grid">
+          <div><span>执行人</span><b>{step.executor || "待定"}</b></div>
+          <div><span>审批人</span><b>{step.approver || step.owner}</b></div>
+          <div><span>开始时间</span><b>{formatDate(step.startedAt)}</b></div>
+          <div><span>完成时间</span><b>{step.completedAt ? formatDate(step.completedAt) : step.status === "current" ? "审批中" : "待流转"}</b></div>
+        </div>
+        <div className="pm-approval-panel-box">
+          <div className="pm-section-title">阶段性标准材料</div>
+          <div className="pm-approval-material-table">
+            {(step.materials || ["待补充"]).map((item, materialIndex) => (
+              <div key={`${item}-${materialIndex}`} className="pm-approval-material-row">
+                <div className="pm-approval-material-name">
+                  <span>{materialIndex + 1}</span>
+                  <b>{item}</b>
+                </div>
+                {identityViewMode === "employee" ? (
+                  <>
+                    <input className="pm-inline-field" placeholder="粘贴飞书云文档链接" />
+                    <label className="pm-upload-btn">
+                      <input type="file" />
+                      <span>上传文件</span>
+                    </label>
+                  </>
+                ) : (
+                  <div className="pm-material-readonly" style={{ gridColumn: "span 2" }}>
+                    <span>{step.status === "done" ? "已提交材料，等待后端材料库关联" : "暂无提交链接"}</span>
+                    <span>{step.status === "done" ? "已归档" : "未提交"}</span>
+                  </div>
+                )}
               </div>
+            ))}
+          </div>
+          <div className="pm-muted" style={{ marginTop: 8 }}>{step.note}</div>
+        </div>
+        {identityViewMode === "employee" ? (
+          <div className="pm-approval-panel-box">
+            <div className="pm-guidance-head">
               <div>
-                <div className="pm-inline-label">目标达成</div>
-                <select className="pm-inline-field" value={focusDraft.goalAchieved} disabled={!canEdit || savingFocusId === task.task_id} onChange={(event) => setFocusDraft((prev) => ({ ...prev, goalAchieved: event.target.value as "yes" | "partly" | "no" }))}>
-                  <option value="yes">达到目标</option>
-                  <option value="partly">部分达到</option>
-                  <option value="no">未达到</option>
-                </select>
+                <div className="pm-section-title">我参与的任务</div>
+                <div className="pm-muted">显示当前项目里由我创建或分配给我的任务。</div>
               </div>
+              <button className="pm-row-action" type="button" onClick={() => navigate(`/tasks/new?project_id=${projectId}&assignee_open_id=${me?.open_id || ""}`)}>新建任务</button>
             </div>
-            <div className="pm-inline-label" style={{ marginTop: 10 }}>结束复盘 / 灵感</div>
-            <textarea className="pm-inline-field pm-inline-textarea" value={focusDraft.finishReflection} disabled={!canEdit || savingFocusId === task.task_id} placeholder="沉淀给知识库的要点、下次可复用的方法、遗留想法" onChange={(event) => setFocusDraft((prev) => ({ ...prev, finishReflection: event.target.value }))} />
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, color: "#1F2329", fontSize: 12, fontWeight: 700 }}>
-              <input type="checkbox" checked={focusDraft.saveAsKnowledge} disabled={!canEdit || savingFocusId === task.task_id} onChange={(event) => setFocusDraft((prev) => ({ ...prev, saveAsKnowledge: event.target.checked }))} />
-              同步为知识文档
-            </label>
-            {focusDraft.saveAsKnowledge ? (
-              <>
-                <div className="pm-inline-label" style={{ marginTop: 10 }}>知识标题</div>
-                <input className="pm-inline-field" value={focusDraft.knowledgeTitle} disabled={!canEdit || savingFocusId === task.task_id} placeholder={`任务复盘：${task.title}`} onChange={(event) => setFocusDraft((prev) => ({ ...prev, knowledgeTitle: event.target.value }))} />
-                <div className="pm-muted" style={{ marginTop: 6 }}>会创建一条“文档贡献”，并用 project/task 标签关联到当前任务。</div>
-              </>
-            ) : null}
-	            <div className="pm-inline-actions">
-	              {canEdit ? (
-	                <button className="pm-tool-btn" type="button" disabled={savingFocusId === task.task_id} onClick={() => void finishTaskWork(task)}>
-	                  结束并完成任务
-	                </button>
-	              ) : null}
-	            </div>
-	              </>
-	            ) : (
-	              <div className="pm-muted" style={{ marginTop: 6 }}>结束任务、填写复盘和知识沉淀时再展开。</div>
-	            )}
-	          </div>
+            {employeeProjectTasks.length === 0 ? <div className="pm-muted">暂无和当前身份关联的任务</div> : null}
+            {employeeProjectTasks.slice(0, 5).map((task) => (
+              <div key={task.task_id} className="pm-kv-line">
+                <span>{task.title}</span>
+                <b>{taskStatusStyle[task.status]?.label || task.status}</b>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="pm-guidance-box">
+          <div className="pm-guidance-head">
+            <div>
+              <div className="pm-section-title">过程记录</div>
+              <div className="pm-muted">日报、群聊、任务、过程材料和过程记录集中放到独立页面。</div>
+            </div>
+            {renderTag(`${guidanceRecords.length} 条记录`, { bg: "#F4F3FF", fg: "#5B21B6" })}
+          </div>
+          <button
+            className="pm-primary pm-guidance-save"
+            type="button"
+            onClick={() => navigate(`/projects/${projectId}/guidance?step=${stepIndex}`)}
+          >
+            进入过程记录页
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPaperApprovalBoard = (project: Project, snapshot: PaperApprovalSnapshot) => {
+    const progress = getPaperApprovalProgress(snapshot);
+    const currentIndex = Math.max(1, snapshot.steps.findIndex((step) => step.status === "current") + 1);
+    return (
+      <div className="pm-approval-board-row">
+        <div className="pm-approval-board">
+          <div className="pm-approval-board-head">
+              <span>{snapshot.title}</span>
+              {renderTag("审批中", { bg: "#E8F3FF", fg: "#1D4ED8" })}
+              <b>{progress}%</b>
+              <span>{currentIndex}/{snapshot.steps.length} · {snapshot.currentNode} · {snapshot.currentApprover}</span>
+            </div>
+          <div className="pm-approval-node-flow">
+            {snapshot.steps.map((step, index) => (
+              <Fragment key={step.title}>
+                <button
+                  className="pm-approval-node-wrap"
+                  type="button"
+                  data-status={step.status}
+                  data-selected={selectedApprovalStepKey === approvalStepKey(project.project_id, index)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const key = approvalStepKey(project.project_id, index);
+                    setSelectedApprovalStepKey((prev) => prev === key ? null : key);
+                  }}
+                >
+                  <div className="pm-approval-node-group">{step.group}</div>
+                  <div className="pm-approval-node">{index + 1}</div>
+                  <div className="pm-approval-node-label">{step.title}</div>
+                  <div className="pm-approval-node-date">{approvalStepDateLabel(step)}</div>
+                </button>
+                {index < snapshot.steps.length - 1 ? (
+                  <div className="pm-approval-line" data-active={step.status === "done" ? "true" : undefined}>
+                    <span>{approvalLineDaysLabel(step, snapshot.steps[index + 1])}</span>
+                  </div>
+                ) : null}
+              </Fragment>
+            ))}
+          </div>
+          {renderApprovalStepPanel(project, snapshot)}
+        </div>
+      </div>
+    );
+  };
+
+  const renderProjectStageNodeMap = (project: Project) => {
+    const category = getProjectCategory(project);
+    if (category === "all") return null;
+    const stages = categoryStageTemplates[category];
+    return (
+      <div className="pm-stage-node-map">
+        <div className="pm-stage-node-map-head">
+          <span>{category}阶段节点</span>
+          <b>{stages.length} 个阶段</b>
+        </div>
+        <div className="pm-stage-node-grid">
+          {stages.map((stage, index) => (
+            <div key={`${project.project_id}-${stage.title}`} className="pm-stage-node-item">
+              <div className="pm-stage-node-title">{index + 1}. {stage.title}</div>
+              <div className="pm-stage-node-list">{stage.nodes.join(" / ")}</div>
+            </div>
+          ))}
         </div>
       </div>
     );
   };
 
   const renderProjectRows = () => (
-    <div className="pm-table-scroll">
-    <table className="pm-table">
-      <colgroup>
-        <col style={{ width: "30%" }} />
-        <col style={{ width: "11%" }} />
-        <col style={{ width: "10%" }} />
-        <col style={{ width: "9%" }} />
-        <col style={{ width: "15%" }} />
-        <col style={{ width: "8%" }} />
-        <col style={{ width: "11%" }} />
-        <col style={{ width: "6%" }} />
-      </colgroup>
-      <thead>
-        <tr>
-          <th>项目</th>
-          <th>负责人</th>
-          <th>状态</th>
-          <th>优先级</th>
-          <th>进度</th>
-          <th>任务</th>
-          <th>更新</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        {filteredProjects.map((project) => {
+    <div className="pm-project-list">
+      <div className="pm-table-scroll" style={{ margin: "-12px -12px 0" }}>
+        <div className="pm-project-card-labels">
+          <span>项目</span>
+          <span>负责人</span>
+          <span>状态</span>
+          <span>优先级</span>
+          <span>进度</span>
+          <span>任务</span>
+          <span>更新</span>
+          <span className="pm-project-card-label-action">操作</span>
+        </div>
+      </div>
+      {filteredProjects.map((project) => {
           const projectType = projectTypeStyle[project.my_project_type || project.project_type || "team"];
           const category = getProjectCategory(project);
           const progress = getProgress(project);
           const owner = memberMap[project.owner_open_id];
           const canEdit = canDeleteProject(project);
-          const detail = expandedProjects[project.project_id] || project;
-          const detailTasks = projectTasks[project.project_id] || [];
-          const detailRelations = projectRelations[project.project_id] || [];
-          const detailLogs = projectLogs[project.project_id] || [];
-          const detailKnowledge = projectKnowledge[project.project_id] || [];
-	          const detailMeetings = projectMeetings[project.project_id] || [];
-	          const detailCalendarEvents = projectCalendarEvents[project.project_id] || [];
-	          const meetingExpanded = Boolean(expandedMeetingProjectIds[project.project_id]);
-          const meetingRows = detailMeetings.map((note) => ({
-            note,
-            urls: extractMeetingUrls(note),
-            durationMinutes: parseMeetingDurationMinutes(note),
-          }));
-          const calendarMeetingRows = detailCalendarEvents.map((event) => ({
-            event,
-            urls: extractCalendarEventUrls(event),
-            durationMinutes: calendarEventDurationMinutes(event),
-          }));
-          const knownMeetingDuration =
-            meetingRows.reduce((sum, item) => sum + (item.durationMinutes || 0), 0)
-            + calendarMeetingRows.reduce((sum, item) => sum + item.durationMinutes, 0);
-          const plannedSeconds = detailTasks.reduce((sum, task) => {
-            if (!task.planned_start_date || !task.due_date) return sum;
-            const start = new Date(task.planned_start_date).getTime();
-            const end = new Date(task.due_date).getTime();
-            return Number.isFinite(start) && Number.isFinite(end) && end > start ? sum + Math.round((end - start) / 1000) : sum;
-          }, 0);
-          const actualSeconds = detailTasks.reduce((sum, task) => sum + (focusSummaries[task.task_id] || 0), 0);
-          const participantCount = new Set(detailTasks.map((task) => task.assignee_open_id || task.created_by).filter(Boolean)).size || 1;
-          const doneTaskCount = detailTasks.filter((task) => task.status === "done").length;
-          const actualDeltaMinutes = Math.round((actualSeconds - plannedSeconds) / 60);
-          const focusLoadedCount = detailTasks.filter((task) => focusSummaries[task.task_id] !== undefined).length;
-          const actionableTasks = detailTasks.filter((task) => !["done", "cancelled"].includes(task.status));
-          const inProgressTasks = actionableTasks.filter((task) => task.status === "in_progress");
-          const blockedTasks = actionableTasks.filter((task) => task.status === "blocked");
-          const overdueTasks = actionableTasks.filter((task) => task.due_date && new Date(task.due_date).getTime() < Date.now());
-          const memberExecutionRows = Array.from(
-            actionableTasks.reduce((groups, task) => {
-              const openId = task.assignee_open_id || task.created_by || "__unassigned__";
-              const current = groups.get(openId) || [];
-              current.push(task);
-              groups.set(openId, current);
-              return groups;
-            }, new Map<string, Task[]>()),
-          )
-            .map(([openId, items]) => ({
-              openId,
-              memberName: openId === "__unassigned__" ? "未分配" : memberMap[openId]?.name || openId,
-              activeTask: items.find((task) => task.status === "in_progress") || items[0],
-              tasks: items,
-              blockedCount: items.filter((task) => task.status === "blocked").length,
-              overdueCount: items.filter((task) => task.due_date && new Date(task.due_date).getTime() < Date.now()).length,
-            }))
-            .sort((left, right) => {
-              if (left.activeTask.status === "in_progress" && right.activeTask.status !== "in_progress") return -1;
-              if (right.activeTask.status === "in_progress" && left.activeTask.status !== "in_progress") return 1;
-              return left.memberName.localeCompare(right.memberName, "zh-Hans-CN");
-            });
-          const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-          const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-          const taskChangedToday = detailTasks.filter((task) => new Date(task.updated_at || task.created_at).getTime() >= oneDayAgo).length;
-          const taskChangedThisWeek = detailTasks.filter((task) => new Date(task.updated_at || task.created_at).getTime() >= oneWeekAgo).length;
-          const tasksDoneThisWeek = detailTasks.filter((task) => task.completed_at && new Date(task.completed_at).getTime() >= oneWeekAgo).length;
-          const knowledgeHours = detailKnowledge.reduce((sum, item) => sum + (Number(item.hours) || 0), 0);
-          const knowledgeLikeCount = detailKnowledge.reduce((sum, item) => sum + (item.like_count || 0), 0);
-          const knowledgeCommentCount = detailKnowledge.reduce((sum, item) => sum + (item.comment_count || 0), 0);
-          const knowledgeInteractionCount = knowledgeLikeCount + knowledgeCommentCount;
-          const scoredKnowledge = detailKnowledge.filter((item) => item.score !== null && item.score !== undefined);
-          const averageKnowledgeScore = scoredKnowledge.length
-            ? scoredKnowledge.reduce((sum, item) => sum + (Number(item.score) || 0), 0) / scoredKnowledge.length
-            : null;
-          const chatInteractionCount = (detail.chats || []).reduce((sum, chat) => sum + (chat.message_count || 0), 0);
-          const derivedRelationCount = detailRelations.filter((relation) => relation.relation_type === "derived" || relation.relation_type === "transformed_to").length;
-          const projectSummaryLines = [
-            taskChangedToday > 0 ? `过去 24 小时有 ${taskChangedToday} 个任务发生更新。` : "过去 24 小时暂无任务更新，建议确认项目是否需要推进。",
-            tasksDoneThisWeek > 0 ? `本周完成 ${tasksDoneThisWeek} 个任务，已有可沉淀成果。` : "本周暂无完成任务，适合检查拆解粒度和截止时间。",
-            detailKnowledge.length > 0 ? `已关联 ${detailKnowledge.length} 条知识，沉淀 ${knowledgeHours.toFixed(1)} 小时，获得 ${knowledgeInteractionCount} 次互动。` : "项目暂无知识沉淀，任务完成时建议同步为知识文档。",
-            chatInteractionCount > 0 ? `关联群聊累计 ${chatInteractionCount} 条消息，可继续从话题中提炼日报。` : "暂未形成群聊互动数据，可关联项目话题后同步。",
-          ];
-          const projectRecommendations = getProjectRecommendations(project);
-          const completedProjectRecommendations = projectRecommendations.filter((item) => item.project.status === "completed" || item.project.status === "archived");
-          const activeProjectRecommendations = projectRecommendations.filter((item) => !["completed", "archived"].includes(item.project.status));
-          const visibleProjectChats = visibleChats[project.project_id] || [];
+          const approvalSnapshot = getProjectApprovalSnapshot(project);
           return (
-            <Fragment key={project.project_id}>
-            <tr onClick={() => openProjectInline(project)} style={{ cursor: "pointer", background: expandedProjectId === project.project_id ? "#F7F8FA" : undefined }}>
-              <td>
-                <div className="pm-name-cell">
-                  <div className="pm-name-main">{project.name}</div>
-                  <div className="pm-name-sub">
-                    {renderTag(projectType.label, projectType)}
-                    {category !== "all" ? <span style={{ marginLeft: 6 }}>{renderTag(category, { bg: "#F0FDF4", fg: "#15803D" })}</span> : null}
-                    {project.is_abnormal ? <span style={{ marginLeft: 6 }}>{renderTag("异常", { bg: "#FEE2E2", fg: "#B91C1C" })}</span> : null}
-                  </div>
-                </div>
-              </td>
-              <td>{renderAssignee(project.owner_open_id || owner?.open_id)}</td>
-              <td>{renderTag(projectStatusStyle[project.status].label, projectStatusStyle[project.status])}</td>
-              <td>{renderTag(priorityStyle[project.priority].label, priorityStyle[project.priority])}</td>
-              <td>
-                <div className="pm-sidebar-metric-row" style={{ marginBottom: 4 }}>
-                  <span>{progress}%</span>
-                  <span>{project.task_done_count}/{project.task_count}</span>
-                </div>
-                <div className="pm-progress"><span style={{ width: `${progress}%` }} /></div>
-              </td>
-              <td>{project.task_count}</td>
-              <td className="pm-muted">{formatDate(project.updated_at)}</td>
-              <td onClick={(event) => event.stopPropagation()}>
-                <button className="pm-row-action" type="button" onClick={() => openProjectInline(project)}>
-                  {expandedProjectId === project.project_id ? "收起" : "展开"}
-                </button>
-                {canDeleteProject(project) ? (
-                  <button
-                    className="pm-row-action pm-row-action-danger"
-                    type="button"
-                    disabled={deletingId === project.project_id}
-                    onClick={() => handleDeleteProject(project)}
-                  >
-                    删除
-                  </button>
-                ) : null}
-              </td>
-            </tr>
-            {expandedProjectId === project.project_id ? (
-              <tr>
-                <td colSpan={8} style={{ padding: 0 }}>
-                  <div className="pm-inline-editor">
-                    <div className="pm-inline-grid">
-                      <div className="pm-inline-panel">
-                        <div className="pm-inline-label">项目名称</div>
-                        <input className="pm-inline-field" value={projectDraft.name} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, name: event.target.value }))} />
-                        <div className="pm-inline-label" style={{ marginTop: 10 }}>项目描述</div>
-                        <textarea className="pm-inline-field pm-inline-textarea" value={projectDraft.description} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, description: event.target.value }))} />
-                        <div className="pm-inline-actions">
-                          {canEdit ? (
-                            <button className="pm-primary-btn" type="button" disabled={savingProjectId === project.project_id} onClick={() => void saveProjectInline(project)}>
-                              保存项目
-                            </button>
-                          ) : null}
-                          <button className="pm-tool-btn" type="button" onClick={() => setExpandedProjectId(null)}>收起</button>
-                        </div>
-	                        <div style={{ marginTop: 12, padding: 10, border: "1px solid #E5E6EB", borderRadius: 6, background: "#FAFAFA" }}>
-	                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-	                            <div>
-	                              <div className="pm-section-title" style={{ marginBottom: 2 }}>关联飞书会议</div>
-	                              <div className="pm-muted">
-	                                {projectMeetingsLoadingId === project.project_id ? "加载中" : `已关联 ${detailMeetings.length + detailCalendarEvents.length} 场`}
-	                                {knownMeetingDuration ? ` · ${formatMinutes(knownMeetingDuration)}` : ""}
-	                              </div>
-	                            </div>
-	                            <button className="pm-row-action" type="button" onClick={() => setExpandedMeetingProjectIds((prev) => ({ ...prev, [project.project_id]: !prev[project.project_id] }))}>
-	                              {meetingExpanded ? "收起" : "展开"}
-	                            </button>
-	                          </div>
-	                          {meetingExpanded ? (
-	                          <>
-	                          <button className="pm-row-action" type="button" disabled={projectMeetingsLoadingId === project.project_id} onClick={() => loadProjectMeetings(project.project_id)}>
-	                            刷新会议
-	                          </button>
-	                          <div style={{ display: "grid", gap: 6, marginBottom: 10 }}>
-                            <div className="pm-inline-fields">
-                              <div>
-                                <div className="pm-inline-label">会议标题</div>
-                                <input className="pm-inline-field" value={meetingLinkDrafts[project.project_id]?.title || ""} placeholder={`${project.name} 会议`} onChange={(event) => setMeetingLinkDrafts((prev) => ({ ...prev, [project.project_id]: { ...(prev[project.project_id] || { title: "", url: "", durationMinutes: "" }), title: event.target.value } }))} />
-                              </div>
-                              <div>
-                                <div className="pm-inline-label">飞书会议链接</div>
-                                <input className="pm-inline-field" value={meetingLinkDrafts[project.project_id]?.url || ""} placeholder="https://..." onChange={(event) => setMeetingLinkDrafts((prev) => ({ ...prev, [project.project_id]: { ...(prev[project.project_id] || { title: "", url: "", durationMinutes: "" }), url: event.target.value } }))} />
-                              </div>
-                              <div>
-                                <div className="pm-inline-label">时长(分钟)</div>
-                                <input className="pm-inline-field" type="number" min="0" value={meetingLinkDrafts[project.project_id]?.durationMinutes || ""} placeholder="60" onChange={(event) => setMeetingLinkDrafts((prev) => ({ ...prev, [project.project_id]: { ...(prev[project.project_id] || { title: "", url: "", durationMinutes: "" }), durationMinutes: event.target.value } }))} />
-                              </div>
-                            </div>
-                            <button className="pm-primary-btn" type="button" disabled={savingMeetingProjectId === project.project_id} onClick={() => void saveProjectMeetingLink(project)}>
-                              保存会议链接
-                            </button>
-                          </div>
-                          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, marginBottom: 8 }}>
-                            <div><div className="pm-inline-label">会议数</div><div style={{ fontWeight: 850 }}>{projectMeetingsLoadingId === project.project_id ? "加载中" : detailMeetings.length + detailCalendarEvents.length}</div></div>
-                            <div><div className="pm-inline-label">识别时长</div><div style={{ fontWeight: 850 }}>{knownMeetingDuration ? formatMinutes(knownMeetingDuration) : "未识别"}</div></div>
-                            <div><div className="pm-inline-label">会议链接</div><div style={{ fontWeight: 850 }}>{meetingRows.reduce((sum, item) => sum + item.urls.length, 0) + calendarMeetingRows.reduce((sum, item) => sum + item.urls.length, 0)}</div></div>
-                          </div>
-                          {calendarMeetingRows.length ? (
-                            <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
-                              {calendarMeetingRows.slice(0, 4).map(({ event, urls, durationMinutes }) => (
-                                <div key={event.event_id} style={{ padding: 8, border: "1px solid #F2F3F5", borderRadius: 6, background: "#FFFFFF" }}>
-                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                                    <div style={{ minWidth: 0, fontSize: 12, fontWeight: 850, color: "#1F2329", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.title}</div>
-                                    <div className="pm-muted" style={{ whiteSpace: "nowrap" }}>{durationMinutes ? formatMinutes(durationMinutes) : "时长未识别"}</div>
-                                  </div>
-                                  <div className="pm-muted" style={{ marginTop: 3 }}>{formatDate(event.start_at)} · 日历同步</div>
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                                    {urls.slice(0, 2).map((url) => (
-                                      <a key={url} className="pm-row-action" href={url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
-                                        打开会议
-                                      </a>
-                                    ))}
-                                    {urls.length === 0 ? <span className="pm-muted">未识别到飞书会议链接</span> : null}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                          {meetingRows.length ? (
-                            <div style={{ display: "grid", gap: 6 }}>
-                              {meetingRows.slice(0, 4).map(({ note, urls, durationMinutes }) => (
-                                <div key={note.note_id} style={{ padding: 8, border: "1px solid #F2F3F5", borderRadius: 6, background: "#FFFFFF" }}>
-                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                                    <div style={{ minWidth: 0, fontSize: 12, fontWeight: 850, color: "#1F2329", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{note.meeting_title}</div>
-                                    <div className="pm-muted" style={{ whiteSpace: "nowrap" }}>{durationMinutes ? formatMinutes(durationMinutes) : "时长未识别"}</div>
-                                  </div>
-                                  <div className="pm-muted" style={{ marginTop: 3 }}>{formatDate(note.meeting_date)} · {note.meeting_type}</div>
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                                    {urls.slice(0, 2).map((url) => (
-                                      <a key={url} className="pm-row-action" href={url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
-                                        打开会议
-                                      </a>
-                                    ))}
-                                    {urls.length === 0 ? <span className="pm-muted">未识别到飞书会议链接</span> : null}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-	                          ) : (
-	                            calendarMeetingRows.length === 0 ? <div className="pm-muted">暂无关联会议。可直接输入会议链接保存；飞书日历日程请在日历页面同步，日程文本包含 project:{project.project_id} 时会自动关联。</div> : null
-	                          )}
-	                          </>
-	                          ) : null}
-	                        </div>
-                      </div>
-                      <div className="pm-inline-panel">
-                        <div className="pm-inline-fields">
-                          <div>
-                            <div className="pm-inline-label">状态</div>
-                            <select className="pm-inline-field" value={projectDraft.status} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, status: event.target.value as ProjectStatus }))}>
-                              <option value="planning">规划中</option>
-                              <option value="active">进行中</option>
-                              <option value="paused">已暂停</option>
-                              <option value="completed">已完成</option>
-                              <option value="archived">已存档</option>
-                            </select>
-                          </div>
-                          <div>
-                            <div className="pm-inline-label">优先级</div>
-                            <select className="pm-inline-field" value={projectDraft.priority} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, priority: event.target.value as ProjectPriority }))}>
-                              <option value="low">低</option>
-                              <option value="medium">中</option>
-                              <option value="high">高</option>
-                              <option value="urgent">紧急</option>
-                            </select>
-                          </div>
-                          <div>
-                            <div className="pm-inline-label">类型</div>
-                            <select className="pm-inline-field" value={projectDraft.project_type} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, project_type: event.target.value as ProjectType }))}>
-                              <option value="team">团队项目</option>
-                              <option value="personal">个人项目</option>
-                            </select>
-                          </div>
-                          <div>
-                            <div className="pm-inline-label">部门</div>
-                            <select className="pm-inline-field" value={projectDraft.department} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, department: event.target.value }))}>
-                              <option value="">未设置</option>
-                              {departmentOptions.map((department) => (
-                                <option key={department} value={department}>{department}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <div className="pm-inline-label">开始时间</div>
-                            <input className="pm-inline-field" type="date" value={projectDraft.start_date} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, start_date: event.target.value }))} />
-                          </div>
-                          <div>
-                            <div className="pm-inline-label">目标截止</div>
-                            <input className="pm-inline-field" type="date" value={projectDraft.target_end_date} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, target_end_date: event.target.value }))} />
-                          </div>
-                          <div>
-                            <div className="pm-inline-label">完成时间</div>
-                            <input className="pm-inline-field" type="date" value={projectDraft.actual_end_date} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, actual_end_date: event.target.value }))} />
-                          </div>
-                          <div>
-                            <div className="pm-inline-label">积分</div>
-                            <input className="pm-inline-field" type="number" min="0" value={projectDraft.points_awarded} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, points_awarded: event.target.value }))} />
-                          </div>
-                        </div>
-                        <div className="pm-inline-label" style={{ marginTop: 10 }}>大类标签</div>
-                        <select className="pm-inline-field" value={projectDraft.category} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, category: event.target.value as ProjectCategoryFilter }))}>
-                          <option value="all">未设置</option>
-                          {projectCategoryValues.map((category) => (
-                            <option key={category} value={category}>{category}</option>
-                          ))}
-                        </select>
-                        <div className="pm-inline-label" style={{ marginTop: 10 }}>其他标签</div>
-                        <input className="pm-inline-field" value={projectDraft.tags} disabled={!canEdit} onChange={(event) => setProjectDraft((prev) => ({ ...prev, tags: event.target.value }))} />
+            <div
+              key={project.project_id}
+              id={`project-card-${project.project_id}`}
+              className="pm-project-card"
+              data-highlight={highlightProjectId === project.project_id ? "true" : undefined}
+            >
+              <div className="pm-table-scroll">
+                <div className="pm-project-card-head">
+                  <div className="pm-project-card-cell">
+                    <div className="pm-name-cell">
+                      <div className="pm-name-main">{project.name}</div>
+                      <div className="pm-name-sub">
+                        {renderTag(projectType.label, projectType)}
+                        {category !== "all" ? <span style={{ marginLeft: 6 }}>{renderTag(category, { bg: "#F0FDF4", fg: "#15803D" })}</span> : null}
+                        {project.is_abnormal ? <span style={{ marginLeft: 6 }}>{renderTag("异常", { bg: "#FEE2E2", fg: "#B91C1C" })}</span> : null}
                       </div>
                     </div>
-                    <div className="pm-inline-panel" style={{ marginTop: 12 }}>
-                      <div className="pm-section-title">详情信息</div>
-                      {projectDetailLoadingId === project.project_id ? (
-                        <div className="pm-muted">正在加载完整项目详情...</div>
-                      ) : (
-                        <>
-                          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, marginBottom: 12 }}>
-                            <div><div className="pm-inline-label">负责人</div>{renderAssignee(detail.owner_open_id)}</div>
-                            <div><div className="pm-inline-label">开始</div><div>{formatDate(detail.start_date)}</div></div>
-                            <div><div className="pm-inline-label">目标截止</div><div>{formatDate(detail.target_end_date)}</div></div>
-                            <div><div className="pm-inline-label">完成</div><div>{formatDate(detail.actual_end_date)}</div></div>
-                            <div><div className="pm-inline-label">任务进度</div><div>{detail.task_done_count}/{detail.task_count}</div></div>
-                            <div><div className="pm-inline-label">已进行</div><div>{detail.days_active} 天</div></div>
-                            <div><div className="pm-inline-label">知识</div><div>{projectKnowledgeLoadingId === project.project_id ? "加载中" : `${detailKnowledge.length} 条`}</div></div>
-                            <div><div className="pm-inline-label">更新</div><div>{formatDate(detail.updated_at)}</div></div>
-                          </div>
-                          {detail.is_abnormal ? (
-                            <div style={{ marginBottom: 10, color: "#B91C1C", fontSize: 12, fontWeight: 700 }}>
-                              异常：{detail.abnormal_reason || "项目存在异常"}
-                            </div>
-                          ) : null}
-                          <div style={{ marginBottom: 12, padding: 10, border: "1px solid #E5E6EB", borderRadius: 6, background: "#FAFAFA" }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                              <div className="pm-section-title" style={{ marginBottom: 0 }}>项目效能</div>
-                              <button className="pm-row-action" type="button" onClick={() => loadProjectFocusSummaries(detailTasks)}>
-                                刷新实际耗时
-                              </button>
-                            </div>
-                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
-                              <div><div className="pm-inline-label">预计总时间</div><div style={{ fontWeight: 800 }}>{formatMinutes(Math.round(plannedSeconds / 60))}</div></div>
-                              <div><div className="pm-inline-label">实际专注</div><div style={{ fontWeight: 800 }}>{formatMinutes(Math.round(actualSeconds / 60))}</div></div>
-                              <div><div className="pm-inline-label">偏差</div><div style={{ fontWeight: 800, color: actualDeltaMinutes > 0 ? "#B45309" : "#15803D" }}>{plannedSeconds ? `${actualDeltaMinutes >= 0 ? "+" : "-"}${formatMinutes(Math.abs(actualDeltaMinutes))}` : "未计算"}</div></div>
-                              <div><div className="pm-inline-label">人均投入</div><div style={{ fontWeight: 800 }}>{formatMinutes(Math.round(actualSeconds / 60 / participantCount))}</div></div>
-                              <div><div className="pm-inline-label">完成任务</div><div style={{ fontWeight: 800 }}>{doneTaskCount}/{detailTasks.length}</div></div>
-                            </div>
-                            <div className="pm-muted" style={{ marginTop: 8 }}>
-                              实际耗时已加载 {focusLoadedCount}/{detailTasks.length} 个任务；已关联会议 {detailMeetings.length} 场，识别会议时长 {knownMeetingDuration ? formatMinutes(knownMeetingDuration) : "未识别"}。
-                            </div>
-                          </div>
-                          <div style={{ marginBottom: 12, padding: 10, border: "1px solid #E5E6EB", borderRadius: 6, background: "#FFFFFF" }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                              <div className="pm-section-title" style={{ marginBottom: 0 }}>实时执行态势</div>
-                              <div style={{ display: "flex", gap: 6 }}>
-                                <button className="pm-row-action" type="button" disabled={larkStatusLoadingProjectId === project.project_id} onClick={() => loadProjectLarkStatuses(project.project_id, detailTasks)}>刷新状态</button>
-                                <button className="pm-row-action" type="button" onClick={() => navigate("/calendar")}>安排会议</button>
-                              </div>
-                            </div>
-                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8, marginBottom: 8 }}>
-                              <div><div className="pm-inline-label">推进中</div><div style={{ fontWeight: 800 }}>{inProgressTasks.length}</div></div>
-                              <div><div className="pm-inline-label">可行动任务</div><div style={{ fontWeight: 800 }}>{actionableTasks.length}</div></div>
-                              <div><div className="pm-inline-label">受阻</div><div style={{ fontWeight: 800, color: blockedTasks.length ? "#B91C1C" : "#15803D" }}>{blockedTasks.length}</div></div>
-                              <div><div className="pm-inline-label">逾期</div><div style={{ fontWeight: 800, color: overdueTasks.length ? "#B45309" : "#15803D" }}>{overdueTasks.length}</div></div>
-                            </div>
-                            <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 0.6fr) minmax(180px, 1.4fr) 88px 74px 74px 84px", gap: 8, color: "#646A73", fontSize: 12, fontWeight: 800, padding: "6px 0", borderBottom: "1px solid #F2F3F5" }}>
-                              <div>成员</div><div>此刻任务</div><div>飞书状态</div><div>任务状态</div><div>逾期</div><div>任务数</div>
-                            </div>
-                            {memberExecutionRows.slice(0, 8).map((row) => (
-                              <div key={row.openId} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 0.6fr) minmax(180px, 1.4fr) 88px 74px 74px 84px", gap: 8, alignItems: "center", padding: "7px 0", borderBottom: "1px solid #F7F8FA", fontSize: 12 }}>
-                                <div style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.memberName}</div>
-                                <div style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.activeTask.title}</div>
-                                <div style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: larkStatuses[row.openId] ? "#15803D" : "#646A73", fontWeight: larkStatuses[row.openId] ? 800 : 500 }}>{row.openId === "__unassigned__" ? "-" : larkStatusLabel(larkStatuses[row.openId])}</div>
-                                <div>{renderTag(taskStatusStyle[row.activeTask.status].label, taskStatusStyle[row.activeTask.status])}</div>
-                                <div style={{ color: row.overdueCount ? "#B45309" : "#646A73", fontWeight: row.overdueCount ? 800 : 500 }}>{row.overdueCount}</div>
-                                <div className="pm-muted">{row.tasks.length}{row.blockedCount ? ` · 阻塞${row.blockedCount}` : ""}</div>
-                              </div>
-                            ))}
-                            {memberExecutionRows.length === 0 ? <div className="pm-muted">当前没有进行中、待办或受阻任务</div> : null}
-                            {memberExecutionRows.length > 8 ? <div className="pm-muted" style={{ marginTop: 6 }}>还有 {memberExecutionRows.length - 8} 位成员未显示</div> : null}
-                          </div>
-                          <div style={{ marginBottom: 12, padding: 10, border: "1px solid #E5E6EB", borderRadius: 6, background: "#FAFAFA" }}>
-                            <div className="pm-section-title">项目日报 / 周报摘要</div>
-                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 8, marginBottom: 8 }}>
-                              <div><div className="pm-inline-label">今日任务更新</div><div style={{ fontWeight: 850 }}>{taskChangedToday}</div></div>
-                              <div><div className="pm-inline-label">本周任务更新</div><div style={{ fontWeight: 850 }}>{taskChangedThisWeek}</div></div>
-                              <div><div className="pm-inline-label">本周完成</div><div style={{ fontWeight: 850 }}>{tasksDoneThisWeek}</div></div>
-                              <div><div className="pm-inline-label">知识沉淀</div><div style={{ fontWeight: 850 }}>{detailKnowledge.length}</div></div>
-                              <div><div className="pm-inline-label">沉淀时长</div><div style={{ fontWeight: 850 }}>{knowledgeHours.toFixed(1)}h</div></div>
-                              <div><div className="pm-inline-label">知识互动</div><div style={{ fontWeight: 850 }}>{knowledgeInteractionCount}</div></div>
-                              <div><div className="pm-inline-label">群聊消息</div><div style={{ fontWeight: 850 }}>{chatInteractionCount}</div></div>
-                              <div><div className="pm-inline-label">衍生/转化</div><div style={{ fontWeight: 850 }}>{derivedRelationCount}</div></div>
-                              <div><div className="pm-inline-label">知识评分</div><div style={{ fontWeight: 850 }}>{averageKnowledgeScore === null ? "未评分" : averageKnowledgeScore.toFixed(1)}</div></div>
-                            </div>
-                            <div style={{ display: "grid", gap: 6 }}>
-                              {projectSummaryLines.map((line) => (
-                                <div key={line} style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 12, lineHeight: 1.5, color: "#1F2329" }}>
-                                  <span style={{ width: 6, height: 6, borderRadius: 999, background: "#3370FF", marginTop: 7, flex: "0 0 auto" }} />
-                                  <span>{line}</span>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="pm-muted" style={{ marginTop: 8 }}>知识互动 = 点赞 {knowledgeLikeCount} + 评论 {knowledgeCommentCount}，评论内容可在项目知识里展开查看。</div>
-                          </div>
-                          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.35fr) minmax(260px, 0.65fr)", gap: 12 }}>
-                            <div>
-                              <div className="pm-section-title">成员</div>
-                              {canEdit ? (
-                                <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 6, marginBottom: 8 }}>
-                                  <select
-                                    className="pm-inline-field"
-                                    value={projectMemberAddDrafts[project.project_id] || ""}
-                                    onChange={(event) => setProjectMemberAddDrafts((prev) => ({ ...prev, [project.project_id]: event.target.value }))}
-                                  >
-                                    <option value="">选择要添加的成员</option>
-                                    {memberOptions
-                                      .filter((item) => !(detail.members || []).some((member) => !member.left_at && member.member_open_id === item.openId))
-                                      .map((item) => (
-                                        <option key={item.openId} value={item.openId}>{item.name}</option>
-                                      ))}
-                                  </select>
-                                  <button
-                                    className="pm-tool-btn"
-                                    type="button"
-                                    disabled={savingProjectMemberKey !== null}
-                                    onClick={() => void addProjectMemberInline(project.project_id)}
-                                  >
-                                    添加
-                                  </button>
-                                </div>
-                              ) : null}
-                              <div style={{ display: "grid", gap: 8, maxHeight: 260, overflow: "auto" }}>
-                                {(detail.members || []).filter((member) => !member.left_at).slice(0, 16).map((member) => {
-                                  const key = projectMemberDraftKey(project.project_id, member.member_open_id);
-                                  const draft = projectMemberDrafts[key] || { role: member.role, share_ratio: String(member.share_ratio ?? 0), tags: member.tags || "" };
-                                  const person = memberMap[member.member_open_id];
-                                  return (
-                                    <div key={member.member_open_id} style={{ display: "grid", gridTemplateColumns: "minmax(120px, 1fr) 82px 68px minmax(90px, 1fr) auto", gap: 6, alignItems: "center", padding: 6, border: "1px solid #F2F3F5", borderRadius: 6, background: "#FAFAFA" }}>
-                                      <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
-                                        <MemberAvatarLink openId={member.member_open_id} viewerOpenId={me?.open_id} src={person?.avatar_url} name={person?.name || member.member_open_id} size={24} />
-                                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: 800 }}>{person?.name || member.member_open_id}</span>
-                                      </div>
-                                      <select className="pm-inline-field" value={draft.role} disabled={!canEdit} onChange={(event) => setProjectMemberDrafts((prev) => ({ ...prev, [key]: { ...draft, role: event.target.value as PMRole } }))}>
-                                        <option value="owner">负责</option>
-                                        <option value="co_lead">协同</option>
-                                        <option value="member">成员</option>
-                                        <option value="observer">观察</option>
-                                      </select>
-                                      <input className="pm-inline-field" type="number" min="0" max="1" step="0.05" value={draft.share_ratio} disabled={!canEdit} onChange={(event) => setProjectMemberDrafts((prev) => ({ ...prev, [key]: { ...draft, share_ratio: event.target.value } }))} />
-                                      <input className="pm-inline-field" value={draft.tags} disabled={!canEdit} placeholder="标签" onChange={(event) => setProjectMemberDrafts((prev) => ({ ...prev, [key]: { ...draft, tags: event.target.value } }))} />
-                                      {canEdit ? (
-                                        <div style={{ display: "flex", gap: 4 }}>
-                                          <button className="pm-row-action" type="button" disabled={savingProjectMemberKey === key} onClick={() => void saveProjectMemberInline(project.project_id, member)}>保存</button>
-                                          {member.role !== "owner" ? <button className="pm-row-action pm-row-action-danger" type="button" disabled={savingProjectMemberKey === key} onClick={() => void removeProjectMemberInline(project.project_id, member.member_open_id)}>移出</button> : null}
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })}
-                                {(detail.members || []).filter((member) => !member.left_at).length === 0 ? <span className="pm-muted">暂无成员</span> : null}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="pm-section-title">最近日志</div>
-                              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 220, overflow: "auto" }}>
-                                {detailLogs.slice(0, 10).map((log) => (
-                                  <div key={log.log_id} style={{ padding: "6px 0", borderBottom: "1px solid #F2F3F5", color: "#646A73", fontSize: 12 }}>
-                                    {formatDate(log.created_at)} · {log.title}
-                                  </div>
-                                ))}
-                                {detailLogs.length === 0 ? <span className="pm-muted">暂无日志</span> : null}
-                              </div>
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 12, padding: 10, border: "1px solid #F2F3F5", borderRadius: 6, background: "#FAFAFA" }}>
-                            <div className="pm-section-title">关联项目</div>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                              {detailRelations.slice(0, 4).map((relation) => (
-                                <span key={relation.relation_id} className="pm-tag" style={{ background: "#F2F3F5", color: "#4E5969" }}>
-                                  {relation.relation_label} · {relation.project_name}
-                                </span>
-                              ))}
-                              {detailRelations.length > 4 ? <span className="pm-muted">+{detailRelations.length - 4}</span> : null}
-                              {detailRelations.length === 0 ? <span className="pm-muted">暂无关联</span> : null}
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 12, padding: 10, border: "1px solid #F2F3F5", borderRadius: 6, background: "#FFFFFF" }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                              <div className="pm-section-title" style={{ marginBottom: 0 }}>项目知识</div>
-                              <button className="pm-row-action" type="button" disabled={projectKnowledgeLoadingId === project.project_id} onClick={() => loadProjectKnowledge(project.project_id)}>
-                                刷新
-                              </button>
-                            </div>
-                            {projectKnowledgeLoadingId === project.project_id ? <div className="pm-muted">正在加载知识条目...</div> : null}
-                            {projectKnowledgeLoadingId !== project.project_id && detailKnowledge.length === 0 ? <div className="pm-muted">暂无任务沉淀知识</div> : null}
-                            {detailKnowledge.slice(0, 6).map((item) => {
-                              const taskTag = splitProjectTags(item.tags).find((tag) => tag.startsWith("task:"));
-                              const comments = knowledgeComments[item.contribution_id];
-                              return (
-                                <Fragment key={item.contribution_id}>
-                                  <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) 100px 84px 112px", gap: 8, padding: "7px 0", borderTop: "1px solid #F2F3F5", alignItems: "center", fontSize: 12 }}>
-                                    <div style={{ minWidth: 0 }}>
-                                      <div style={{ fontWeight: 800, color: "#1F2329", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</div>
-                                      <div className="pm-muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{taskTag || "未关联任务"} · {item.description?.split("\n").slice(-1)[0] || "无摘要"}</div>
-                                    </div>
-                                    <div className="pm-muted">{memberMap[item.member_open_id]?.name || item.member_open_id}</div>
-                                    <div className="pm-muted">{formatDate(item.occurred_at)}</div>
-                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
-                                      <button className="pm-row-action" type="button" disabled={likingKnowledgeId === item.contribution_id} onClick={() => void likeProjectKnowledge(project.project_id, item.contribution_id)}>
-                                        赞 {item.like_count || 0}
-                                      </button>
-                                      <button className="pm-row-action" type="button" disabled={loadingKnowledgeCommentsId === item.contribution_id} onClick={() => void toggleKnowledgeComments(item.contribution_id)}>
-                                        {comments ? "收起" : `评 ${item.comment_count || 0}`}
-                                      </button>
-                                    </div>
-                                  </div>
-                                  {comments ? (
-                                    <div style={{ margin: "0 0 8px", padding: 8, border: "1px solid #F2F3F5", borderRadius: 6, background: "#FAFAFA" }}>
-                                      {comments.length ? comments.map((comment) => (
-                                        <div key={comment.comment_id} style={{ padding: "5px 0", borderBottom: "1px solid #F2F3F5", fontSize: 12 }}>
-                                          <div style={{ color: "#646A73", marginBottom: 2 }}>
-                                            {memberMap[comment.author_open_id]?.name || comment.author_open_id} · {formatDate(comment.created_at)}
-                                          </div>
-                                          <div style={{ color: "#1F2329", lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{comment.content}</div>
-                                        </div>
-                                      )) : <div className="pm-muted">暂无评论</div>}
-                                      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 6, marginTop: 8 }}>
-                                        <input
-                                          className="pm-inline-field"
-                                          value={knowledgeCommentDrafts[item.contribution_id] || ""}
-                                          placeholder="补充建议、复用经验或问题"
-                                          onChange={(event) => setKnowledgeCommentDrafts((prev) => ({ ...prev, [item.contribution_id]: event.target.value }))}
-                                        />
-                                        <button className="pm-tool-btn" type="button" disabled={savingKnowledgeCommentId === item.contribution_id} onClick={() => void submitKnowledgeComment(project.project_id, item.contribution_id)}>
-                                          评论
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ) : null}
-                                </Fragment>
-                              );
-                            })}
-                            {detailKnowledge.length > 6 ? <div className="pm-muted" style={{ marginTop: 6 }}>还有 {detailKnowledge.length - 6} 条知识未显示</div> : null}
-                          </div>
-                          <div style={{ marginTop: 12 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                              <div className="pm-section-title" style={{ marginBottom: 0 }}>群聊与话题</div>
-                              <div style={{ display: "flex", gap: 6 }}>
-                                <input className="pm-inline-field" style={{ width: 180, minHeight: 28 }} value={chatQuery} placeholder="搜索我的飞书群聊" onChange={(event) => setChatQuery(event.target.value)} />
-                                <button className="pm-tool-btn" type="button" disabled={chatSearchingId === project.project_id} onClick={() => void searchVisibleChats(project.project_id)}>
-                                  搜索群聊
-                                </button>
-                              </div>
-                            </div>
-                            <div style={{ display: "grid", gridTemplateColumns: visibleProjectChats.length > 0 ? "minmax(0, 1fr) minmax(0, 1fr)" : "1fr", gap: 12 }}>
-                              <div className="pm-inline-panel">
-                                <div className="pm-section-title">已关联群聊/话题</div>
-                                {(detail.chats || []).map((chat) => (
-                                  <div key={chat.project_chat_id} style={{ padding: "8px 0", borderBottom: "1px solid #F2F3F5" }}>
-                                    <div style={{ fontSize: 13, fontWeight: 700 }}>{chat.chat_name || "飞书群聊"}</div>
-                                    <div className="pm-muted">{chat.selected_topic_title || chat.latest_topic_title || chat.selected_topic_key || "未选话题"} · 消息 {chat.message_count}</div>
-                                    <div className="pm-inline-actions" style={{ marginTop: 6 }}>
-                                      <button className="pm-row-action" type="button" disabled={syncingChatId === chat.project_chat_id} onClick={() => void syncChat(project.project_id, chat.project_chat_id)}>同步</button>
-                                      <button className="pm-row-action" type="button" disabled={messageLoadingId === chat.project_chat_id} onClick={() => void toggleChatMessages(project.project_id, chat.project_chat_id, chat.selected_topic_key || chat.latest_topic_key)}>
-                                        {chatMessages[chat.project_chat_id] ? "收起消息" : "展开消息"}
-                                      </button>
-                                    </div>
-                                    {chatMessages[chat.project_chat_id] ? (
-                                      <div style={{ marginTop: 8, maxHeight: 220, overflow: "auto", border: "1px solid #F2F3F5", borderRadius: 6, background: "#FFFFFF" }}>
-                                        {chatMessages[chat.project_chat_id].map((message) => (
-                                          <div key={message.project_chat_message_id} style={{ padding: 8, borderBottom: "1px solid #F7F8FA", fontSize: 12 }}>
-                                            <div className="pm-muted">{message.sender_name || message.sender_open_id || "未知成员"} · {formatDate(message.message_created_at)}</div>
-                                            <div style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{message.content || `[${message.msg_type || "消息"}]`}</div>
-                                          </div>
-                                        ))}
-                                        {chatMessages[chat.project_chat_id].length === 0 ? <div className="pm-muted" style={{ padding: 8 }}>暂无已同步消息</div> : null}
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                ))}
-                                {(detail.chats || []).length === 0 ? <div className="pm-muted">暂无关联群聊</div> : null}
-                              </div>
-                              {visibleProjectChats.length > 0 ? (
-                              <div className="pm-inline-panel">
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 6 }}>
-                                  <div className="pm-section-title" style={{ marginBottom: 0 }}>选择群聊话题</div>
-                                  <button className="pm-row-action" type="button" onClick={() => setVisibleChats((prev) => ({ ...prev, [project.project_id]: [] }))}>收起选择</button>
-                                </div>
-                                {visibleProjectChats.map((chat) => (
-                                  <div key={chat.chat_id} style={{ padding: "8px 0", borderBottom: "1px solid #F2F3F5" }}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                      <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{chat.name || "未命名群聊"}</div>
-                                        <div className="pm-muted" style={{ wordBreak: "break-all" }}>{chat.chat_id}</div>
-                                      </div>
-                                      <button className="pm-row-action" type="button" disabled={topicLoadingKey === chat.chat_id} onClick={() => void loadVisibleChatTopics(chat)}>话题</button>
-                                    </div>
-                                    {(visibleChatTopics[chat.chat_id] || []).map((topic) => (
-                                      <div key={topic.topic_key} style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 6, padding: 6, background: "#F7F8FA", borderRadius: 5 }}>
-                                        <div style={{ minWidth: 0 }}>
-                                          <div style={{ fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{topic.title || topic.topic_key}</div>
-                                          <div className="pm-muted">{topic.reply_count} 条 · {formatDate(topic.last_reply_at)}</div>
-                                        </div>
-                                        <button className="pm-row-action" type="button" onClick={() => void associateTopic(project.project_id, chat, topic)}>关联</button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ))}
-                              </div>
-                              ) : null}
-                            </div>
-                          </div>
-                          <div className="pm-inline-panel" style={{ marginTop: 12 }}>
-                            <div className="pm-section-title">项目流程拆解</div>
-                            <div style={{ marginBottom: 10, border: "1px solid #E8EAED", borderRadius: 6, background: "#FAFAFA", padding: 8 }}>
-                              <div className="pm-section-title" style={{ marginBottom: 6 }}>相似项目与可复用流程</div>
-                              {projectRecommendations.length ? (
-                                <div style={{ display: "grid", gap: 10 }}>
-                                  <div>
-                                    <div className="pm-inline-label">做过相似项目</div>
-                                    {completedProjectRecommendations.length ? (
-                                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-                                        {completedProjectRecommendations.map((item) => renderProjectRecommendationCard(item, project))}
-                                      </div>
-                                    ) : <div className="pm-muted">暂无已完成的相似项目。</div>}
-                                  </div>
-                                  <div>
-                                    <div className="pm-inline-label">正在做相似项目</div>
-                                    {activeProjectRecommendations.length ? (
-                                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-                                        {activeProjectRecommendations.map((item) => renderProjectRecommendationCard(item, project))}
-                                      </div>
-                                    ) : <div className="pm-muted">暂无正在推进的相似项目。</div>}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="pm-muted">暂无相似项目。项目完成、任务拆解和知识沉淀越多，这里会越准确。</div>
-                              )}
-                            </div>
-                            <div className="pm-inline-fields">
-                              <div>
-                                <div className="pm-inline-label">流程模板</div>
-                                <select className="pm-inline-field" value={workflowDraft.template} disabled={!canEdit || generatingWorkflowId === project.project_id} onChange={(event) => {
-                                  const template = event.target.value as WorkflowTemplateKey;
-                                  setWorkflowDraft((prev) => ({
-                                    ...prev,
-                                    template,
-                                    customNodes: defaultWorkflowText(template),
-                                  }));
-                                }}>
-                                  {projectCategoryValues.map((category) => (
-                                    <option key={category} value={category}>{category}标准流程</option>
-                                  ))}
-                                  <option value="自定义">自定义流程</option>
-                                </select>
-                              </div>
-                              <div>
-                                <div className="pm-inline-label">默认负责人</div>
-                                <select className="pm-inline-field" value={workflowDraft.assignee_open_id} disabled={!canEdit || generatingWorkflowId === project.project_id} onChange={(event) => setWorkflowDraft((prev) => ({ ...prev, assignee_open_id: event.target.value }))}>
-                                  <option value="">项目负责人</option>
-                                  {memberOptions.map((member) => (
-                                    <option key={member.openId} value={member.openId}>{member.name}</option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div>
-                                <div className="pm-inline-label">审核人/说明</div>
-                                <input className="pm-inline-field" value={workflowDraft.reviewer} disabled={!canEdit || generatingWorkflowId === project.project_id} placeholder="负责人审核" onChange={(event) => setWorkflowDraft((prev) => ({ ...prev, reviewer: event.target.value }))} />
-                              </div>
-                            </div>
-                            <div className="pm-inline-label" style={{ marginTop: 10 }}>流程节点</div>
-                            <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-                              {workflowNodeLines().map((line, index) => {
-                                const [title = "", hours = "2", review = "负责人审核"] = line.split("|").map((part) => part.trim());
-                                return (
-                                  <div key={`${index}-${line}`} style={{ border: "1px solid #E5E6EB", borderRadius: 6, padding: 8, background: "#FAFAFA", display: "grid", gap: 6 }}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center" }}>
-                                      <span style={{ fontSize: 12, fontWeight: 850, color: "#1F2329" }}>节点 {index + 1}</span>
-                                      {canEdit && workflowNodeLines().length > 1 ? (
-                                        <button className="pm-row-action pm-row-action-danger" type="button" disabled={generatingWorkflowId === project.project_id} onClick={() => removeWorkflowNodeLine(index)}>删除</button>
-                                      ) : null}
-                                    </div>
-                                    <input className="pm-inline-field" value={title} disabled={!canEdit || generatingWorkflowId === project.project_id} placeholder="节点名称" onChange={(event) => updateWorkflowNodeLine(index, "title", event.target.value)} />
-                                    <input className="pm-inline-field" type="number" min="1" value={hours} disabled={!canEdit || generatingWorkflowId === project.project_id} placeholder="预计小时" onChange={(event) => updateWorkflowNodeLine(index, "hours", event.target.value)} />
-                                    <input className="pm-inline-field" value={review} disabled={!canEdit || generatingWorkflowId === project.project_id} placeholder="审核要求" onChange={(event) => updateWorkflowNodeLine(index, "review", event.target.value)} />
-                                  </div>
-                                );
-                              })}
-                            </div>
-                            {canEdit ? (
-                              <div className="pm-inline-actions" style={{ marginTop: 8 }}>
-                                <button className="pm-tool-btn" type="button" disabled={generatingWorkflowId === project.project_id} onClick={addWorkflowNodeLine}>添加节点</button>
-                              </div>
-                            ) : null}
-                            <div className="pm-inline-actions">
-                              {canEdit ? (
-                                <button className="pm-primary-btn" type="button" disabled={generatingWorkflowId === project.project_id} onClick={() => void generateProjectWorkflow(project)}>
-                                  启动项目并生成任务
-                                </button>
-                              ) : null}
-                              <span className="pm-muted">生成后会按节点创建任务，并把预计耗时、审核要求写入任务描述。</span>
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 12 }}>
-                            <div className="pm-section-title">项目任务</div>
-                            <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) 84px 84px 110px 72px", gap: 8, color: "#646A73", fontSize: 12, fontWeight: 700, padding: "6px 0", borderBottom: "1px solid #F2F3F5" }}>
-                              <div>任务</div><div>状态</div><div>优先级</div><div>负责人</div><div>操作</div>
-                            </div>
-                            {detailTasks.map((task) => (
-                              <Fragment key={task.task_id}>
-                                <div onClick={() => openProjectTaskInline(task)} style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) 84px 84px 110px 72px", gap: 8, alignItems: "center", padding: "7px 0", borderBottom: "1px solid #F7F8FA", fontSize: 12, cursor: "pointer", background: expandedProjectTaskId === task.task_id ? "#F7F8FA" : undefined }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{task.title}</span>
-                                    {!(task.thinking || "").trim() ? renderTag("缺思路", { bg: "#FEE2E2", fg: "#991B1B" }) : null}
-                                    {task.task_origin === "chat_ai" ? renderTag("群聊识别", { bg: "#E8F3FF", fg: "#1D4ED8" }) : null}
-                                  </div>
-                                  <div>{renderTag(taskStatusStyle[task.status].label, taskStatusStyle[task.status])}</div>
-                                  <div>{renderTag(priorityStyle[task.priority].label, priorityStyle[task.priority])}</div>
-                                  <div className="pm-muted">{renderTaskAssigneeStatus(task)}</div>
-                                  <div onClick={(event) => event.stopPropagation()}>
-                                    {canDeleteTask(task) ? (
-                                      <button className="pm-row-action pm-row-action-danger" type="button" disabled={deletingTaskId === task.task_id} onClick={() => handleDeleteTask(task)}>删除</button>
-                                    ) : null}
-                                  </div>
-                                </div>
-                                {expandedProjectTaskId === task.task_id ? (
-                                  <div
-                                    style={{ padding: 10, background: "#F7F8FA", borderBottom: "1px solid #E5E6EB" }}
-                                    onClick={(event) => {
-                                      if (event.target === event.currentTarget) setExpandedProjectTaskId(null);
-                                    }}
-                                  >
-                                    <div className="pm-inline-grid">
-                                      <div className="pm-inline-panel">
-                                        <div className="pm-inline-label">任务标题</div>
-                                        <input className="pm-inline-field" value={taskDraft.title} disabled={!canDeleteTask(task)} onChange={(event) => setTaskDraft((prev) => ({ ...prev, title: event.target.value }))} />
-                                        <div className="pm-inline-label" style={{ marginTop: 10 }}>任务描述</div>
-                                        <textarea className="pm-inline-field pm-inline-textarea" value={taskDraft.description} disabled={!canDeleteTask(task)} onChange={(event) => setTaskDraft((prev) => ({ ...prev, description: event.target.value }))} />
-                                        <div className="pm-inline-label" style={{ marginTop: 10 }}>任务思路</div>
-                                        <textarea className="pm-inline-field pm-inline-textarea" value={taskDraft.thinking} disabled={!canDeleteTask(task)} placeholder="今天准备怎么做、先验证什么、需要谁配合" onChange={(event) => setTaskDraft((prev) => ({ ...prev, thinking: event.target.value }))} />
-                                        <div className="pm-inline-actions">
-                                          {canDeleteTask(task) ? <button className="pm-primary-btn" type="button" disabled={savingTaskId === task.task_id} onClick={() => void saveTaskInline(task)}>保存任务</button> : null}
-                                        </div>
-                                      </div>
-                                      <div className="pm-inline-panel">
-                                        <div className="pm-inline-fields">
-                                          <div><div className="pm-inline-label">状态</div><select className="pm-inline-field" value={taskDraft.status} disabled={!canDeleteTask(task)} onChange={(event) => setTaskDraft((prev) => ({ ...prev, status: event.target.value as TaskStatus }))}><option value="todo">待办</option><option value="in_progress">进行中</option><option value="done">已完成</option><option value="blocked">受阻</option><option value="cancelled">已取消</option></select></div>
-                                          <div><div className="pm-inline-label">优先级</div><select className="pm-inline-field" value={taskDraft.priority} disabled={!canDeleteTask(task)} onChange={(event) => setTaskDraft((prev) => ({ ...prev, priority: event.target.value as ProjectPriority }))}><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="urgent">紧急</option></select></div>
-                                          <div><div className="pm-inline-label">负责人</div><select className="pm-inline-field" value={taskDraft.assignee_open_id} disabled={!canDeleteTask(task)} onChange={(event) => setTaskDraft((prev) => ({ ...prev, assignee_open_id: event.target.value }))}><option value="">未分配</option>{memberOptions.map((member) => <option key={member.openId} value={member.openId}>{member.name}</option>)}</select></div>
-                                        </div>
-                                        <div style={{ marginTop: 10, color: "#646A73", fontSize: 12, lineHeight: 1.7 }}>截止：{formatDate(task.due_date)} · 更新：{formatDate(task.updated_at)}</div>
-                                        <div className="pm-inline-label" style={{ marginTop: 10 }}>进度暂存 / 过程总结</div>
-                                        <textarea className="pm-inline-field pm-inline-textarea" value={taskDraft.progress_draft} disabled={!canDeleteTask(task)} placeholder="随手保存当前进展、卡点、经验和下一步" onChange={(event) => setTaskDraft((prev) => ({ ...prev, progress_draft: event.target.value }))} />
-                                      </div>
-                                    </div>
-                                    {renderTaskFocusPanel(task, canDeleteTask(task))}
-                                  </div>
-                                ) : null}
-                              </Fragment>
-                            ))}
-                            {detailTasks.length === 0 ? <div className="pm-muted">暂无任务</div> : null}
-                          </div>
-                        </>
-                      )}
-                    </div>
                   </div>
-                </td>
-              </tr>
-            ) : null}
-            </Fragment>
+                  <div className="pm-project-card-cell">{renderAssignee(project.owner_open_id || owner?.open_id)}</div>
+                  <div className="pm-project-card-cell">{renderTag(projectStatusStyle[project.status].label, projectStatusStyle[project.status])}</div>
+                  <div className="pm-project-card-cell">{renderTag(priorityStyle[project.priority].label, priorityStyle[project.priority])}</div>
+                  <div className="pm-project-card-cell">
+                    {approvalSnapshot ? renderPaperApprovalInline(approvalSnapshot) : (
+                      <>
+                        <div className="pm-sidebar-metric-row" style={{ marginBottom: 4 }}>
+                          <span>{progress}%</span>
+                          <span>{project.task_done_count}/{project.task_count}</span>
+                        </div>
+                        <div className="pm-progress"><span style={{ width: `${progress}%` }} /></div>
+                      </>
+                    )}
+                  </div>
+                  <div className="pm-project-card-cell">{project.task_count}</div>
+                  <div className="pm-project-card-cell pm-muted">{formatDate(project.updated_at)}</div>
+                  <div className="pm-project-card-cell pm-project-card-cell-action" onClick={(event) => event.stopPropagation()}>
+                    <button
+                      className="pm-row-action pm-row-action-danger"
+                      type="button"
+                      disabled={deletingId === project.project_id}
+                      title={canEdit ? "删除项目" : "当前账号可能无权删除，点击后以后端校验为准"}
+                      onClick={() => {
+                        handleDeleteProject(project);
+                      }}
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {renderProjectStageNodeMap(project)}
+              {approvalSnapshot ? renderPaperApprovalBoard(project, approvalSnapshot) : null}
+            </div>
           );
-        })}
-      </tbody>
-    </table>
+      })}
     </div>
   );
+
+  const renderProjectKanban = () => (
+    <div className="pm-view-panel">
+      <div className="pm-table-scroll">
+        <div className="pm-board-grid">
+          {sevenFlowNodes.map((flowNode, flowIndex) => {
+            const statusProjects = filteredProjects.filter((project) => {
+              const snapshot = getProjectApprovalSnapshot(project);
+              if (!snapshot) return flowIndex === 0;
+              const current = snapshot.steps.findIndex((step) => step.status === "current");
+              const doneCount = snapshot.steps.filter((step) => step.status === "done").length;
+              const projectFlowIndex = project.status === "completed" || project.status === "archived"
+                ? snapshot.steps.length - 1
+                : current >= 0
+                  ? current
+                  : Math.min(doneCount, snapshot.steps.length - 1);
+              return projectFlowIndex === flowIndex;
+            });
+            return (
+              <section key={flowNode.title} className="pm-board-column">
+                <div className="pm-board-head">
+                  <span>{flowIndex + 1}. {flowNode.title}</span>
+                  <span>{statusProjects.length}</span>
+                </div>
+                {statusProjects.length === 0 ? <div className="pm-muted">暂无项目</div> : null}
+                {statusProjects.map((project) => {
+                  const category = getProjectCategory(project);
+                  const stageNodes = category !== "all" ? categoryStageTemplates[category][flowIndex]?.nodes || [] : [];
+                  const participants = project.members
+                    .filter((member) => !member.left_at && member.role !== "owner")
+                    .map((member) => memberMap[member.member_open_id]?.name || member.member_open_id);
+                  return (
+                    <button key={project.project_id} className="pm-board-card" type="button" onClick={() => scrollProjectIntoView(project)}>
+                      <b>{project.name}</b>
+                      <small>负责人：{memberMap[project.owner_open_id]?.name || project.owner_open_id || "未设置"} · {getProgress(project)}%</small>
+                      {stageNodes.length ? <small>节点：{stageNodes.join(" / ")}</small> : null}
+                      <small>参与人：{participants.slice(0, 3).join("、") || "待补充"}</small>
+                      <div className="pm-progress" style={{ marginTop: 8 }}><span style={{ width: `${getProgress(project)}%` }} /></div>
+                    </button>
+                  );
+                })}
+              </section>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderProjectGantt = () => (
+    <div className="pm-view-panel">
+      <div className="pm-table-scroll">
+        <div className="pm-gantt-sheet">
+          <div className="pm-gantt-head">
+            <span>项目名称</span>
+            <span>负责人</span>
+            <span>状态</span>
+            <span>截止时间</span>
+            <div className="pm-gantt-days" style={{ gridTemplateColumns: `repeat(${ganttDays.length}, 44px)` }}>
+              {ganttDays.map((day) => <span key={day.key} className="pm-gantt-day">{day.label}</span>)}
+            </div>
+          </div>
+          {projectTimelineRows.map(({ project, start, end }) => {
+            const dayLeft = Math.max(0, Math.floor((start - timelineStart) / 86400000));
+            const dayWidth = Math.max(1, Math.ceil((end - Math.max(start, timelineStart)) / 86400000));
+            return (
+              <div key={project.project_id} className="pm-gantt-row" role="button" tabIndex={0} onClick={() => scrollProjectIntoView(project)} onKeyDown={(event) => {
+                if (event.key === "Enter") scrollProjectIntoView(project);
+              }}>
+                <div className="pm-gantt-cell pm-gantt-name">{project.name}</div>
+                <div className="pm-gantt-cell">{memberMap[project.owner_open_id]?.name || project.owner_open_id || "未设置"}</div>
+                <div className="pm-gantt-cell">{projectStatusStyle[project.status].label}</div>
+                <div className="pm-gantt-cell">{formatDate(project.target_end_date || project.actual_end_date)}</div>
+                <div className="pm-gantt-track" style={{ width: `${ganttDays.length * 44}px` }}>
+                  <span
+                    className="pm-gantt-bar"
+                    data-status={project.status}
+                    style={{ left: `${dayLeft * 44 + 6}px`, width: `${Math.min(dayWidth, ganttDays.length - dayLeft) * 44 - 12}px` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderProjectView = () => {
+    if (projectView === "kanban") return renderProjectKanban();
+    if (projectView === "gantt") return renderProjectGantt();
+    return renderProjectRows();
+  };
 
   const renderTaskRows = (groupTasks: Task[]) => (
     <div className="pm-table-scroll">
@@ -3187,24 +5102,6 @@ const ProjectListPage = () => {
               </td>
               <td>{renderTaskAssigneeStatus(task)}</td>
               <td onClick={(event) => event.stopPropagation()}>
-                <button
-                  className="pm-row-action"
-                  type="button"
-                  disabled={savingTodayTaskId === task.task_id}
-                  onClick={() => void toggleTaskTodayTodo(task, workMode === "today" ? false : !task.today_todo_date)}
-                  style={{
-                    minWidth: 76,
-                    padding: "6px 8px",
-                    borderRadius: 999,
-                    border: task.today_todo_date || workMode === "today" ? "1px solid #FCA5A5" : "1px solid #93C5FD",
-                    background: task.today_todo_date || workMode === "today" ? "#FEF2F2" : "#EFF6FF",
-                    color: task.today_todo_date || workMode === "today" ? "#B91C1C" : "#1D4ED8",
-                    fontWeight: 850,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {workMode === "today" || task.today_todo_date ? "今日中" : "加今日"}
-                </button>
                 {canDeleteTask(task) ? (
                   <button
                     className="pm-row-action pm-row-action-danger"
@@ -3296,7 +5193,6 @@ const ProjectListPage = () => {
                         <textarea className="pm-inline-field pm-inline-textarea" value={taskDraft.progress_draft} disabled={!canEdit} placeholder="随手保存当前进展、卡点、经验和下一步" onChange={(event) => setTaskDraft((prev) => ({ ...prev, progress_draft: event.target.value }))} />
                       </div>
                     </div>
-                    {renderTaskFocusPanel(task, canEdit)}
                   </div>
                 </td>
               </tr>
@@ -3316,16 +5212,64 @@ const ProjectListPage = () => {
         <div className="pm-brand">
           <span className="pm-mark">卷</span>
           <span className="pm-title">项目管理</span>
-          <span className="pm-breadcrumb">工作台 / {workMode === "projects" ? "项目" : workMode === "today" ? "今日待办" : "任务"}</span>
+          <span className="pm-breadcrumb">工作台 / {workMode === "projects" ? "项目" : "任务"}</span>
         </div>
         <div className="pm-module-tabs">
           <button className="pm-tab-btn" type="button" data-active={workMode === "projects"} onClick={() => setWorkMode("projects")}>项目</button>
           <button className="pm-tab-btn" type="button" data-active={workMode === "tasks"} onClick={() => setWorkMode("tasks")}>任务</button>
-          <button className="pm-tab-btn" type="button" data-active={workMode === "today"} onClick={() => setWorkMode("today")}>今日待办</button>
         </div>
         <div className="pm-toolbar-right">
-          <input className="pm-search" value={query} placeholder="搜索项目、任务、负责人" onChange={(event) => setQuery(event.target.value)} />
-          <button className="pm-tool-btn" type="button" onClick={() => navigate("/tasks/new")}>新建任务</button>
+          <div className="pm-unified-search">
+            <input
+              className="pm-search"
+              value={query}
+              placeholder="搜索项目 / 任务 / 人员"
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setMemberFilterOpenId("");
+              }}
+            />
+            {query ? (
+              <button
+                className="pm-search-clear"
+                type="button"
+                aria-label="清空搜索"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  setQuery("");
+                  setMemberFilterOpenId("");
+                }}
+              >
+                ×
+              </button>
+            ) : null}
+            {searchFocused && peopleSuggestions.length > 0 ? (
+              <div className="pm-people-popover">
+                <div className="pm-people-popover-title">匹配到的组织人员</div>
+                {peopleSuggestions.map((member) => (
+                  <button
+                    key={member.open_id}
+                    className="pm-people-option"
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      setMemberFilterOpenId(member.open_id);
+                      setQuery(member.name || member.open_id);
+                      setSearchFocused(false);
+                    }}
+                  >
+                    <span className="pm-people-avatar">{(member.name || member.open_id).slice(0, 1)}</span>
+                    <span className="pm-people-main">
+                      <span className="pm-people-name">{member.name || member.open_id}</span>
+                      <span className="pm-people-meta">{[member.department, member.position || member.title].filter(Boolean).join(" · ") || "未设置部门"}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <button className="pm-primary-btn" type="button" onClick={() => navigate("/projects/new")}>新建项目</button>
         </div>
       </div>
@@ -3335,23 +5279,37 @@ const ProjectListPage = () => {
           <div className="pm-sidebar-section">
             <div className="pm-sidebar-title">视图</div>
             <button className="pm-nav-item" type="button" data-active={workMode === "projects"} onClick={() => setWorkMode("projects")}>
-              <span>项目列表</span><span className="pm-nav-count">{projects.length}</span>
+              <span className="pm-nav-label"><span className="pm-nav-icon">▦</span><span>项目列表</span></span><span className="pm-nav-count">{projects.length}</span>
             </button>
             <button className="pm-nav-item" type="button" data-active={workMode === "tasks"} onClick={() => setWorkMode("tasks")}>
-              <span>任务列表</span><span className="pm-nav-count">{tasks.length}</span>
-            </button>
-            <button className="pm-nav-item" type="button" data-active={workMode === "today"} onClick={() => setWorkMode("today")}>
-              <span>今日待办</span><span className="pm-nav-count">{workMode === "today" ? filteredTasks.length : "-"}</span>
+              <span className="pm-nav-label"><span className="pm-nav-icon">✓</span><span>任务列表</span></span><span className="pm-nav-count">{tasks.length}</span>
             </button>
           </div>
 
           {workMode === "projects" ? (
             <>
               <div className="pm-sidebar-section">
+                <div className="pm-sidebar-title">项目视图</div>
+                {projectViewItems.map((item) => (
+                  <button
+                    key={item.key}
+                    className="pm-nav-item"
+                    type="button"
+                    data-active={projectView === item.key}
+                    onClick={() => {
+                      setWorkMode("projects");
+                      setProjectView(item.key);
+                    }}
+                  >
+                    <span className="pm-nav-label"><span className="pm-nav-icon">{item.key === "table" ? "≡" : item.key === "kanban" ? "▣" : "⌁"}</span><span>{item.title}</span></span>
+                  </button>
+                ))}
+              </div>
+              <div className="pm-sidebar-section">
                 <div className="pm-sidebar-title">项目状态</div>
                 {tabItems.map((item) => (
                   <button key={item.key} className="pm-nav-item" type="button" data-active={activeKey === item.key} onClick={() => setActiveKey(item.key)}>
-                    <span>{item.title}</span>
+                    <span className="pm-nav-label"><span className="pm-nav-icon">{item.key === "planning" ? "◇" : item.key === "active" ? "●" : item.key === "completed" ? "◆" : "□"}</span><span>{item.title}</span></span>
                   </button>
                 ))}
               </div>
@@ -3363,37 +5321,19 @@ const ProjectListPage = () => {
                   ["personal", "个人项目"],
                 ] as Array<["all" | ProjectType, string]>).map(([value, label]) => (
                   <button key={value} className="pm-nav-item" type="button" data-active={projectTypeFilter === value} onClick={() => setProjectTypeFilter(value)}>
-                    <span>{label}</span>
+                    <span className="pm-nav-label"><span className="pm-nav-icon">{value === "all" ? "⌘" : value === "team" ? "◌" : "◍"}</span><span>{label}</span></span>
                   </button>
                 ))}
               </div>
-              <div className="pm-sidebar-section">
-                <div className="pm-sidebar-title">执行概览</div>
-                <div className="pm-sidebar-metric">
-                  <div className="pm-sidebar-metric-row"><span>项目数</span><b>{filteredProjects.length}</b></div>
-                  <div className="pm-sidebar-metric-row"><span>完成项目</span><b>{projectDoneCount}</b></div>
-                  <div className="pm-sidebar-metric-row"><span>任务完成率</span><b>{sidebarProgress}%</b></div>
-                  <div className="pm-progress"><span style={{ width: `${sidebarProgress}%` }} /></div>
-                </div>
-              </div>
             </>
-          ) : workMode === "tasks" ? (
+          ) : (
             <div className="pm-sidebar-section">
               <div className="pm-sidebar-title">任务状态</div>
               {taskFilters.map((item) => (
                 <button key={item.value} className="pm-nav-item" type="button" data-active={taskFilter === item.value} onClick={() => setTaskFilter(item.value)}>
-                  <span>{item.label}</span>
+                  <span className="pm-nav-label"><span className="pm-nav-icon">{item.value === "open" ? "◐" : item.value === "todo" ? "○" : item.value === "in_progress" ? "◒" : item.value === "blocked" ? "!" : item.value === "done" ? "✓" : item.value === "cancelled" ? "×" : "∞"}</span><span>{item.label}</span></span>
                 </button>
               ))}
-            </div>
-          ) : (
-            <div className="pm-sidebar-section">
-              <div className="pm-sidebar-title">今日提醒</div>
-              <div className="pm-sidebar-metric">
-                <div className="pm-sidebar-metric-row"><span>今日任务</span><b>{filteredTasks.length}</b></div>
-                <div className="pm-sidebar-metric-row"><span>缺思路</span><b>{missingThinkingTasks.length}</b></div>
-                <div className="pm-sidebar-metric-row"><span>已完成</span><b>{todayCompletedTasks.length}</b></div>
-              </div>
             </div>
           )}
         </aside>
@@ -3401,22 +5341,31 @@ const ProjectListPage = () => {
         <main className="pm-main">
           <div className="pm-toolbar">
             <div className="pm-toolbar-left">
-              <div className="pm-view-title">{workMode === "projects" ? "项目视图" : workMode === "today" ? "今日待办" : isManager ? "按负责人查看任务" : "任务视图"}</div>
+              <div className="pm-view-title">{workMode === "projects" ? "项目视图" : isManager ? "按负责人查看任务" : "任务视图"}</div>
               <div className="pm-muted">{workMode === "projects" ? `${filteredProjects.length} 个项目` : `${filteredTasks.length} 个任务`}</div>
             </div>
             <div className="pm-toolbar-right">
               {workMode === "projects" ? (
-                <Selector
-                  className="pm-selector"
-                  value={[projectCategoryFilter]}
-                  options={[
-                    { label: "全部分类", value: "all" },
-                    ...projectCategoryValues.map((value) => ({ label: value, value })),
-                  ]}
-                  columns={5}
-                  showCheckMark={false}
-                  onChange={(value) => setProjectCategoryFilter((value[0] || "all") as ProjectCategoryFilter)}
-                />
+                <>
+                  <div className="pm-view-switch">
+                    {projectViewItems.map((item) => (
+                      <button key={item.key} type="button" data-active={projectView === item.key} onClick={() => setProjectView(item.key)}>
+                        {item.title}
+                      </button>
+                    ))}
+                  </div>
+                  <select
+                    className="pm-category-select"
+                    value={projectCategoryFilter}
+                    aria-label="项目类别筛选"
+                    onChange={(event) => setProjectCategoryFilter(event.target.value as ProjectCategoryFilter)}
+                  >
+                    <option value="all">全部类别</option>
+                    {projectCategoryValues.map((value) => (
+                      <option key={value} value={value}>{value}</option>
+                    ))}
+                  </select>
+                </>
               ) : (
                 <>
                   <select className="pm-select" value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.target.value)}>
@@ -3432,165 +5381,116 @@ const ProjectListPage = () => {
             </div>
           </div>
 
-          <div style={{ border: "1px solid #E5E6EB", borderRadius: 6, background: "#FFFFFF", padding: 10, margin: "10px 0" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: assistantConfigExpanded ? 8 : 0 }}>
-              <div>
-                <div className="pm-section-title" style={{ marginBottom: 2 }}>AI 助手配置</div>
-                <div className="pm-muted">{aiAssistants.length ? `已配置 ${aiAssistants.length} 个助手，默认隐藏配置表单。` : "需要调整通用/部门助手时再展开配置。"}</div>
+          {workMode === "projects" && projectView === "table" ? (
+            <div className="pm-cockpit">
+              <div className="pm-cockpit-hero">
+                <div className="pm-cockpit-kicker">当前人员身份信息</div>
+                <div className="pm-cockpit-title">{me?.name || "未登录用户"}</div>
+                <div className="pm-cockpit-sub">{me?.department || "未设置部门"} · 当前以{viewRoleLabel}视角查看</div>
+                <div className="pm-identity-switch" aria-label="切换项目管理身份视角">
+                  <button type="button" data-active={identityViewMode === "manager"} onClick={() => setIdentityViewMode("manager")}>管理员/指导者</button>
+                  <button type="button" data-active={identityViewMode === "employee"} onClick={() => setIdentityViewMode("employee")}>员工</button>
+                </div>
+                <div className="pm-identity-grid">
+                  <div className="pm-identity-item"><small>身份角色</small><b>{viewRoleLabel}</b></div>
+                  <div className="pm-identity-item"><small>所属部门</small><b>{me?.department || "未设置"}</b></div>
+                  <div className="pm-identity-item"><small>职位/职称</small><b>{me?.position || me?.title || "未设置"}</b></div>
+                  <div className="pm-identity-item"><small>账号状态</small><b>{memberStatusLabel}</b></div>
+                </div>
               </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button className="pm-row-action" type="button" onClick={loadAIAssistants}>刷新</button>
-                <button className="pm-tool-btn" type="button" onClick={() => setAssistantConfigExpanded((prev) => !prev)}>
-                  {assistantConfigExpanded ? "隐藏配置" : "展开配置"}
-                </button>
-              </div>
-            </div>
-            {assistantConfigExpanded ? (
-            <div style={{ display: "grid", gridTemplateColumns: isManager ? "minmax(260px, 1fr) minmax(300px, 1fr)" : "1fr", gap: 10, alignItems: "start" }}>
-              <div style={{ display: "grid", gap: 6 }}>
-                {aiAssistants.slice(0, 5).map((assistant) => (
-                  <div key={assistant.assistant_id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", padding: 8, border: "1px solid #F2F3F5", borderRadius: 6, background: "#FAFAFA" }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 850, color: "#1F2329", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {assistant.name}
+              <div className="pm-cockpit-grid">
+                <div className="pm-cockpit-panel">
+                  <h3>今日简报 <span>{cockpitBriefs.length} 条待关注</span></h3>
+                  <div className="pm-brief-list">
+                    {cockpitBriefs.length === 0 ? <div className="pm-muted">当前没有逾期、受阻或沉寂项目</div> : null}
+                    {cockpitBriefs.map((item, index) => (
+                      <div key={`${item.label}-${item.title}-${index}`} className="pm-brief-item">
+                        <span className="pm-brief-dot" style={{ background: item.tone }} />
+                        <div>
+                          <div className="pm-brief-title">{renderTag(item.label, { bg: `${item.tone}1A`, fg: item.tone })} {item.title}</div>
+                          <div className="pm-brief-desc">{item.desc}</div>
+                        </div>
+                        <button className="pm-row-action" type="button" onClick={() => setWorkMode("tasks")}>处理</button>
                       </div>
-                      <div className="pm-muted" style={{ marginTop: 3 }}>
-                        {assistant.scope === "global" ? "通用助手" : `${assistant.department || "未设置部门"} 助手`} · {assistant.cadence === "daily" ? "每日" : assistant.cadence === "weekly" ? "每周" : "手动"} · {assistant.enabled ? "启用" : "停用"}
-                      </div>
-                    </div>
-                    {isManager ? <button className="pm-row-action" type="button" onClick={() => editAssistantDraft(assistant)}>编辑</button> : null}
-                  </div>
-                ))}
-                {aiAssistants.length === 0 ? <div className="pm-muted">暂无 AI 助手配置。</div> : null}
-              </div>
-              {isManager ? (
-                <div style={{ display: "grid", gap: 8 }}>
-                  <div className="pm-inline-fields">
-                    <div>
-                      <div className="pm-inline-label">范围</div>
-                      <select className="pm-inline-field" value={assistantDraft.scope} onChange={(event) => setAssistantDraft((prev) => ({ ...prev, scope: event.target.value as AIAssistantScope }))}>
-                        <option value="global">通用助手</option>
-                        <option value="department">部门助手</option>
-                      </select>
-                    </div>
-                    <div>
-                      <div className="pm-inline-label">部门</div>
-                      <select className="pm-inline-field" value={assistantDraft.department} disabled={assistantDraft.scope === "global"} onChange={(event) => setAssistantDraft((prev) => ({ ...prev, department: event.target.value }))}>
-                        <option value="">选择部门</option>
-                        {departmentOptions.map((department) => (
-                          <option key={department} value={department}>{department}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <div className="pm-inline-label">名称</div>
-                      <input className="pm-inline-field" value={assistantDraft.name} onChange={(event) => setAssistantDraft((prev) => ({ ...prev, name: event.target.value }))} />
-                    </div>
-                    <div>
-                      <div className="pm-inline-label">节奏</div>
-                      <select className="pm-inline-field" value={assistantDraft.cadence} onChange={(event) => setAssistantDraft((prev) => ({ ...prev, cadence: event.target.value as AIAssistantCadence }))}>
-                        <option value="daily">每日</option>
-                        <option value="weekly">每周</option>
-                        <option value="manual">手动</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="pm-inline-label">提示词</div>
-                    <textarea className="pm-inline-field pm-inline-textarea" value={assistantDraft.prompt} onChange={(event) => setAssistantDraft((prev) => ({ ...prev, prompt: event.target.value }))} />
-                  </div>
-                  <div>
-                    <div className="pm-inline-label">工作流</div>
-                    <textarea className="pm-inline-field pm-inline-textarea" value={assistantDraft.workflow} onChange={(event) => setAssistantDraft((prev) => ({ ...prev, workflow: event.target.value }))} />
-                  </div>
-                  <div className="pm-inline-actions" style={{ marginTop: 0 }}>
-                    <button className="pm-primary-btn" type="button" disabled={savingAssistantId !== null} onClick={() => void saveAssistantDraft()}>
-                      {assistantDraft.assistant_id ? "保存助手" : "创建助手"}
-                    </button>
-                    <button className="pm-tool-btn" type="button" onClick={() => setAssistantDraft((prev) => ({ ...prev, assistant_id: 0, name: "小卷管理助手", scope: "global", department: "" }))}>
-                      新建
-                    </button>
-                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#646A73", fontSize: 12 }}>
-                      <input type="checkbox" checked={assistantDraft.enabled} onChange={(event) => setAssistantDraft((prev) => ({ ...prev, enabled: event.target.checked }))} />
-                      启用
-                    </label>
+                    ))}
                   </div>
                 </div>
-              ) : null}
+                <div className="pm-cockpit-panel">
+                  <h3>全局总览 <span>当前筛选范围</span></h3>
+                  <div className="pm-cockpit-metrics">
+                    <div className="pm-cockpit-metric"><small>筹备中</small><b>{planningProjects.length}</b></div>
+                    <div className="pm-cockpit-metric"><small>进行中</small><b>{activeProjects.length}</b></div>
+                    <div className="pm-cockpit-metric"><small>已完成</small><b>{completedProjects.length}</b></div>
+                    <div className="pm-cockpit-metric"><small>已归档</small><b>{archivedProjects.length}</b></div>
+                  </div>
+                  <div className="pm-line-health">
+                    {categoryHealth.map((item) => (
+                      <div key={item.category} className="pm-line-health-row">
+                        <span>{item.category}</span>
+                        <span className="pm-line-health-bar"><i style={{ width: `${item.score}%`, background: item.color }} /></span>
+                        <b style={{ color: item.color }}>{item.count}</b>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-            ) : null}
-          </div>
+          ) : null}
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, margin: "10px 0" }}>
-            <div style={{ border: "1px solid #E5E6EB", borderRadius: 6, background: "#FFFFFF", padding: 10 }}>
+          {workMode === "tasks" || projectView === "table" ? (
+          <div className="pm-summary-grid">
+            <div className="pm-metric-card">
               <div className="pm-section-title">管理概览</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(92px, 1fr))", gap: 8 }}>
-                {workMode === "today" ? (
+              <div className="pm-metric-grid">
+                {workMode === "tasks" ? (
                   <>
-                    <div><div className="pm-inline-label">今日任务</div><div style={{ fontWeight: 850 }}>{filteredTasks.length}</div></div>
-                    <div><div className="pm-inline-label">缺思路</div><div style={{ fontWeight: 850, color: missingThinkingTasks.length ? "#B91C1C" : "#15803D" }}>{missingThinkingTasks.length}</div></div>
-                    <div><div className="pm-inline-label">已完成</div><div style={{ fontWeight: 850 }}>{todayCompletedTasks.length}</div></div>
-                    <div><div className="pm-inline-label">整体偏离率</div><div style={{ fontWeight: 850, color: todayDeviationRate > 30 ? "#B45309" : "#15803D" }}>{todayDeviationRows.length ? `${todayDeviationRate}%` : "待累计"}</div></div>
-                  </>
-                ) : workMode === "tasks" ? (
-                  <>
-                    <div><div className="pm-inline-label">今日到期</div><div style={{ fontWeight: 850 }}>{dueTodayTasks.length}</div></div>
-                    <div><div className="pm-inline-label">本周到期</div><div style={{ fontWeight: 850 }}>{dueThisWeekTasks.length}</div></div>
-                    <div><div className="pm-inline-label">逾期</div><div style={{ fontWeight: 850, color: overdueFilteredTasks.length ? "#B45309" : "#15803D" }}>{overdueFilteredTasks.length}</div></div>
-                    <div><div className="pm-inline-label">受阻</div><div style={{ fontWeight: 850, color: blockedFilteredTasks.length ? "#B91C1C" : "#15803D" }}>{blockedFilteredTasks.length}</div></div>
+                    <div className="pm-metric-item"><div className="pm-inline-label">今日到期</div><div className="pm-metric-number">{dueTodayTasks.length}</div></div>
+                    <div className="pm-metric-item"><div className="pm-inline-label">本周到期</div><div className="pm-metric-number">{dueThisWeekTasks.length}</div></div>
+                    <div className="pm-metric-item"><div className="pm-inline-label">逾期</div><div className="pm-metric-number" data-tone={overdueFilteredTasks.length ? "warn" : "good"}>{overdueFilteredTasks.length}</div></div>
+                    <div className="pm-metric-item"><div className="pm-inline-label">受阻</div><div className="pm-metric-number" data-tone={blockedFilteredTasks.length ? "danger" : "good"}>{blockedFilteredTasks.length}</div></div>
                   </>
                 ) : (
-                  <>
-                    <div><div className="pm-inline-label">项目数</div><div style={{ fontWeight: 850 }}>{filteredProjects.length}</div></div>
-                    <div><div className="pm-inline-label">完成率</div><div style={{ fontWeight: 850 }}>{sidebarProgress}%</div></div>
-                    <div><div className="pm-inline-label">异常</div><div style={{ fontWeight: 850, color: abnormalProjects.length ? "#B91C1C" : "#15803D" }}>{abnormalProjects.length}</div></div>
-                    <div><div className="pm-inline-label">未起量</div><div style={{ fontWeight: 850, color: stalledProjects.length ? "#B45309" : "#15803D" }}>{stalledProjects.length}</div></div>
-                  </>
+                  <div className="pm-status-overview-grid">
+                    {projectStatusOverview.map((item) => (
+                      <div key={item.key} className="pm-status-card">
+                        <div className="pm-status-card-head">
+                          <span className="pm-status-card-title">{item.label}</span>
+                          <span className="pm-status-card-count" style={{ color: item.tone.fg }}>{item.projects.length}</span>
+                        </div>
+                        <div className="pm-status-project-list">
+                          {item.projects.length === 0 ? <span className="pm-status-card-empty">暂无项目</span> : null}
+                          {item.projects.map((project) => (
+                            <button
+                              key={project.project_id}
+                              className="pm-status-project-name"
+                              type="button"
+                              title={`定位到 ${project.name}`}
+                              onClick={() => scrollProjectIntoView(project)}
+                            >
+                              {project.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
-            <div style={{ border: "1px solid #E5E6EB", borderRadius: 6, background: "#FAFAFA", padding: 10 }}>
-              <div className="pm-section-title">{workMode === "today" ? "AI 今日概览" : "AI 辅助判断"}</div>
-              {workMode === "today" ? (
-                <div style={{ display: "grid", gap: 8 }}>
-                  <div>
-                    <div className="pm-inline-label">AI 总结的今日思路</div>
-                    <div className="pm-muted" style={{ lineHeight: 1.6 }}>
-                      {todayThinkingLines.length ? todayThinkingLines.map((line, index) => `${index + 1}. ${line}`).join("；") : "今日待办还没有填写任务思路。"}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="pm-inline-label">AI 的今日完成情况</div>
-                    <div className="pm-muted" style={{ lineHeight: 1.6 }}>
-                      {todayCompletionLines.length ? todayCompletionLines.map((line, index) => `${index + 1}. ${line}`).join("；") : "还没有过程暂存或完成复盘。"}
-                    </div>
-                  </div>
-                  <div className="pm-muted">整体偏离率来自任务预计区间与专注/完成记录的差异。</div>
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {managerInsights.map((insight) => (
-                    <div key={insight} style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 12, color: "#1F2329", lineHeight: 1.5 }}>
-                      <span style={{ width: 6, height: 6, borderRadius: 999, background: "#3370FF", marginTop: 7, flex: "0 0 auto" }} />
-                      <span>{insight}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
+          ) : null}
 
           <div className="pm-content">
-            {loading ? <SectionLoading text={workMode === "projects" ? "正在加载项目..." : workMode === "today" ? "正在加载今日待办..." : "正在加载任务..."} /> : null}
+            {loading ? <SectionLoading text={workMode === "projects" ? "正在加载项目..." : "正在加载任务..."} /> : null}
             {!loading && workMode === "projects" && filteredProjects.length === 0 ? (
               <div className="pm-empty-wrap"><SectionEmpty description="当前筛选下没有项目" /></div>
             ) : null}
-            {!loading && workMode === "projects" && filteredProjects.length > 0 ? renderProjectRows() : null}
+            {!loading && workMode === "projects" && filteredProjects.length > 0 ? renderProjectView() : null}
 
-            {!loading && (workMode === "tasks" || workMode === "today") && filteredTasks.length === 0 ? (
-              <div className="pm-empty-wrap"><SectionEmpty description={workMode === "today" ? "今天还没有待办，去任务列表点击加入今日" : "当前筛选下没有任务"} /></div>
+            {!loading && workMode === "tasks" && filteredTasks.length === 0 ? (
+              <div className="pm-empty-wrap"><SectionEmpty description="当前筛选下没有任务" /></div>
             ) : null}
-            {!loading && (workMode === "tasks" || workMode === "today") && filteredTasks.length > 0 ? (
+            {!loading && workMode === "tasks" && filteredTasks.length > 0 ? (
               <div>
                 {taskGroups.map((group) => (
                   <section key={group.key} className="pm-task-group">

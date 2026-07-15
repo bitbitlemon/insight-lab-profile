@@ -3,9 +3,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    notifications_enabled: bool = True  # 通知总开关; .env NOTIFICATIONS_ENABLED=false 关闭所有飞书通知
 
     lark_app_id: str = ""
     lark_app_secret: str = ""
+    lark_task_sync_enabled: bool = True
+    schedule_api_token: str = ""
+    enable_background_services: bool = True
     lark_verification_token: str = ""
     lark_encrypt_key: str = ""
 
@@ -45,6 +49,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_hours: int = 168            # access token: 7 天
     jwt_refresh_expire_hours: int = 720    # refresh token: 30 天
+    web_login_shared_secret: str = ""      # 普通浏览器登录口令; 为空则只校验成员身份标识
 
     rate_limit_login_per_minute: int = 10
     request_max_body_bytes: int = 2 * 1024 * 1024   # 2MB

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import require_admin
 from ..models import Member, SyncState
-from ..services.sync import sync_all_from_base
+from ..services.sync import sync_all_from_base, sync_projects_from_base
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -13,6 +13,13 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 async def trigger_full_sync(db: Session = Depends(get_db), _: Member = Depends(require_admin)):
     """admin 手动全量同步 Base → SQLite"""
     results = await sync_all_from_base(db)
+    return {"results": results}
+
+
+@router.post("/projects")
+async def trigger_projects_sync(db: Session = Depends(get_db), _: Member = Depends(require_admin)):
+    """admin 手动同步项目中心数据: projects + tasks。"""
+    results = await sync_projects_from_base(db)
     return {"results": results}
 
 
